@@ -1,0 +1,29 @@
+{
+  "name": "codex-tui-compact-aware-render",
+  "version": 1,
+  "target": {
+    "codexRustTag": "rust-v0.136.0",
+    "commit": "7ca611348db9446711ed16ed81c84095e3721cee",
+    "workspaceVersion": "0.136.0"
+  },
+  "patch": {
+    "file": "codex-tui-compact-aware-render.patch",
+    "sha256": "3ef9b9f1f8279030ad2981d54e67ce7d50b7ca5e55615902ed4e9a7a18f80bf8"
+  },
+  "config": {
+    "key": "[tui].compact_aware_rendering",
+    "default": true,
+    "fullHistoryFallback": "set [tui].compact_aware_rendering = false"
+  },
+  "scripts": [
+    "verify.ps1",
+    "apply.ps1",
+    "effectiveness.ps1"
+  ],
+  "safety": [
+    "Fail closed on target commit/version mismatch",
+    "Fail closed when patch neither applies nor reverse-applies",
+    "No real API calls; effectiveness uses offline cargo tests only",
+    "Does not modify npm wrapper, Glow Mirror, or user auth/config"
+  ]
+}

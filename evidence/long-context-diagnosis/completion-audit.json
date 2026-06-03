@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "slug": "codex-cli-long-context-terminal-lag",
+  "objective": "Execute Prometheus Strict offline/mock performance diagnosis for Codex CLI rust-v0.136.0 long-context post-compaction terminal lag.",
+  "primary_commit": "7ca611348db9446711ed16ed81c84095e3721cee",
+  "completed_phases": [
+    "Phase 0",
+    "Phase 1",
+    "Phase 2",
+    "Phase 3 skipped unless needed",
+    "Phase 4"
+  ],
+  "historical_control_policy": "v0.135 control not run because no lane required regression comparison for this no-fix diagnosis.",
+  "artifacts": {
+    "diagnosis_matrix": ".omx/long-context-lab/diagnosis-matrix.json",
+    "diagnosis_report": ".omx/long-context-lab/diagnosis-report.md",
+    "results_dir": ".omx/long-context-lab/results",
+    "completion_audit": ".omx/long-context-lab/completion-audit.json"
+  },
+  "safety": {
+    "source_files_modified": false,
+    "real_api_called": false,
+    "real_codex_home_used": false,
+    "real_auth_copied": false,
+    "fix_implementation_started": false
+  },
+  "hypothesis_statuses": {
+    "H1": "confirmed",
+    "H2": "inconclusive",
+    "H3": "confirmed",
+    "H4": "inconclusive",
+    "H5": "confirmed",
+    "H6": "rejected",
+    "H7": "rejected"
+  },
+  "evaluator": {
+    "last_status": "pass",
+    "last_result_path": ".omx/long-context-lab/results/evaluator-last.json",
+    "errors": []
+  },
+  "performance_goal": {
+    "status": "complete",
+    "state_path": ".omx/goals/performance/codex-cli-long-context-terminal-lag/state.json",
+    "ledger_path": ".omx/goals/performance/codex-cli-long-context-terminal-lag/ledger.jsonl",
+    "codex_goal_snapshot_path": ".omx/long-context-lab/results/codex-goal-final-snapshot.json"
+  }
+}

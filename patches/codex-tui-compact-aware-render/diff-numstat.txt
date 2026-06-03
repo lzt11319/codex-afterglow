@@ -1,0 +1,15 @@
+6	0	codex-rs/config/src/types.rs
+5	0	codex-rs/core/config.schema.json
+64	0	codex-rs/core/src/config/config_tests.rs
+8	0	codex-rs/core/src/config/mod.rs
+6	0	codex-rs/tui/src/app.rs
+464	0	codex-rs/tui/src/app/compact_rebuild.rs
+2	0	codex-rs/tui/src/app/test_support.rs
+4	0	codex-rs/tui/src/app/tests.rs
+15	0	codex-rs/tui/src/app/thread_routing.rs
+83	37	codex-rs/tui/src/chatwidget/replay.rs
+79	0	codex-rs/tui/src/chatwidget/tests/history_replay.rs
+719	0	codex-rs/tui/src/compact_aware_replay.rs
+1	0	codex-rs/tui/src/lib.rs
+262	47	codex-rs/tui/src/resume_picker.rs
+101	61	codex-rs/tui/src/resume_picker/transcript.rs

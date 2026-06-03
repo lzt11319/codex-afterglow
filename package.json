@@ -1,0 +1,14 @@
+{
+  "name": "codex-afterglow",
+  "version": "0.1.0-alpha.0",
+  "private": true,
+  "type": "module",
+  "description": "Binary-first companion patch installer for Codex CLI compact-aware TUI rendering.",
+  "scripts": {
+    "test": "node tests/run-fixture-tests.mjs",
+    "verify": "node scripts/verify-source.mjs --manifest-only --json",
+    "install:dry-run": "node install/install.mjs --dry-run --json",
+    "status": "node scripts/afterglow-status.mjs --json"
+  },
+  "license": "MIT"
+}

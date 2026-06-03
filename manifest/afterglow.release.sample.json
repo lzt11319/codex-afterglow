@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "codex": {
+    "tag": "rust-v0.136.0",
+    "commit": "7ca611348db9446711ed16ed81c84095e3721cee",
+    "workspaceVersion": "0.136.0"
+  },
+  "afterglow": {
+    "patchVersion": "0.1.0-alpha.0",
+    "patchSha256": "3ef9b9f1f8279030ad2981d54e67ce7d50b7ca5e55615902ed4e9a7a18f80bf8"
+  },
+  "targets": {
+    "x86_64-unknown-linux-musl": {
+      "asset": "codex-afterglow-rust-v0.136.0-x86_64-unknown-linux-musl",
+      "sha256": "REPLACE_WITH_RELEASE_SHA256",
+      "binaryName": "codex"
+    },
+    "aarch64-unknown-linux-musl": {
+      "asset": "codex-afterglow-rust-v0.136.0-aarch64-unknown-linux-musl",
+      "sha256": "REPLACE_WITH_RELEASE_SHA256",
+      "binaryName": "codex"
+    },
+    "x86_64-apple-darwin": {
+      "asset": "codex-afterglow-rust-v0.136.0-x86_64-apple-darwin",
+      "sha256": "REPLACE_WITH_RELEASE_SHA256",
+      "binaryName": "codex"
+    },
+    "aarch64-apple-darwin": {
+      "asset": "codex-afterglow-rust-v0.136.0-aarch64-apple-darwin",
+      "sha256": "REPLACE_WITH_RELEASE_SHA256",
+      "binaryName": "codex"
+    },
+    "x86_64-pc-windows-msvc": {
+      "asset": "codex-afterglow-rust-v0.136.0-x86_64-pc-windows-msvc.exe",
+      "sha256": "REPLACE_WITH_RELEASE_SHA256",
+      "binaryName": "codex.exe"
+    },
+    "aarch64-pc-windows-msvc": {
+      "asset": "codex-afterglow-rust-v0.136.0-aarch64-pc-windows-msvc.exe",
+      "sha256": "REPLACE_WITH_RELEASE_SHA256",
+      "binaryName": "codex.exe"
+    }
+  },
+  "sourceAnchors": {
+    "files": [
+      "codex-rs/config/src/types.rs",
+      "codex-rs/core/config.schema.json",
+      "codex-rs/core/src/config/config_tests.rs",
+      "codex-rs/core/src/config/mod.rs",
+      "codex-rs/tui/src/app.rs",
+      "codex-rs/tui/src/app/compact_rebuild.rs",
+      "codex-rs/tui/src/app/test_support.rs",
+      "codex-rs/tui/src/app/tests.rs",
+      "codex-rs/tui/src/app/thread_routing.rs",
+      "codex-rs/tui/src/chatwidget/replay.rs",
+      "codex-rs/tui/src/chatwidget/tests/history_replay.rs",
+      "codex-rs/tui/src/compact_aware_replay.rs",
+      "codex-rs/tui/src/lib.rs",
+      "codex-rs/tui/src/resume_picker.rs",
+      "codex-rs/tui/src/resume_picker/transcript.rs"
+    ],
+    "patchMarkers": [
+      "compact_aware_rendering",
+      "tui_compact_aware_rendering",
+      "compact_aware_replay",
+      "rebuild_compact_aware_transcript_after_compaction",
+      "ContextCompaction"
+    ],
+    "semanticTests": [
+      "cargo test -p codex-tui compact_aware -- --nocapture",
+      "cargo test -p codex-tui compact_rebuild -- --nocapture",
+      "cargo test -p codex-core compact_aware -- --nocapture",
+      "cargo test -p codex-core config_schema -- --nocapture"
+    ],
+    "selfCheck": "codex --version plus future afterglow marker if implemented"
+  },
+  "compatibilityStates": [
+    "exact-supported",
+    "drift-compatible",
+    "already-patched",
+    "unpatched-compatible",
+    "unsupported-drift",
+    "dirty-source",
+    "effectiveness-failed",
+    "unsafe-install-target",
+    "invalid-manifest"
+  ],
+  "refusalReasons": [
+    "MANIFEST_INVALID",
+    "TARGET_UNSUPPORTED",
+    "SOURCE_ANCHOR_MISSING",
+    "PATCH_MARKER_MISSING",
+    "SEMANTIC_TEST_MISSING",
+    "DIRTY_SOURCE",
+    "EFFECTIVENESS_FAILED",
+    "UNSAFE_INSTALL_TARGET"
+  ],
+  "trust": {
+    "attestations": "decision-pending-v1-gate",
+    "sbom": "decision-pending-v1-gate",
+    "signing": "decision-pending-v1-gate",
+    "reproducibleBuildNotes": "decision-pending-v1-gate"
+  }
+}

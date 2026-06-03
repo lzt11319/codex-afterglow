@@ -1,0 +1,886 @@
+{
+  "schema_version": 1,
+  "task": "Codex CLI long-context / post-compaction terminal lag diagnosis",
+  "primary_target": {
+    "version": "0.136.0",
+    "tag": "rust-v0.136.0",
+    "commit": "7ca611348db9446711ed16ed81c84095e3721cee",
+    "path": "<isolated-codex-source-v0.136>"
+  },
+  "historical_control": {
+    "version": "0.135.0",
+    "tag": "rust-v0.135.0",
+    "commit": "4daceea869704f9f35e0a3949fc34711ef978a4e",
+    "path": "<isolated-codex-source-v0.135>",
+    "policy": "control only after a primary 0.136 lane is confirmed or regression comparison is needed"
+  },
+  "safety_contract": {
+    "source_edits_allowed": false,
+    "real_api_allowed": false,
+    "real_codex_home_allowed": false,
+    "real_auth_copy_allowed": false,
+    "default_fixture_policy": "synthetic first; real rollout snippets only if copied, minimized, and redacted into isolated fixtures"
+  },
+  "thresholds": {
+    "confirm_relative_to_baseline_min_ratio": 2.0,
+    "confirm_neighbor_control_min_ratio": 1.5,
+    "reject_max_delta_ratio": 0.25,
+    "keypress_echo_p95_ms_visible": 100,
+    "resize_reflow_p95_ms_visible": 250,
+    "resume_to_prompt_p95_ms_visible": 1000,
+    "history_insert_or_render_p95_ms_visible": 250,
+    "runs": {
+      "warmup": 1,
+      "measured_preferred": 7,
+      "measured_minimum_manual": 3
+    }
+  },
+  "hypotheses": [
+    {
+      "id": "H1",
+      "layer": "model_history",
+      "hypothesis": "Compaction replaces model prompt history; old raw transcript is not still sent to the model.",
+      "version_coverage": "0.136 primary; 0.135 only if regression suspected",
+      "fixtures": [
+        "F0-short-baseline",
+        "F1-long-no-compact",
+        "F2-one-compact",
+        "F3-multi-compact-small-suffix",
+        "F7-mock-api-dry-run"
+      ],
+      "metrics": [
+        "model_payload_bytes",
+        "model_history_items"
+      ],
+      "status": "confirmed",
+      "confidence": "high",
+      "evidence_paths": [
+        ".omx/long-context-lab/results/v0.136-h1-model-history.json",
+        ".omx/long-context-lab/results/v0.136-code-evidence.json"
+      ],
+      "artifact_path": ".omx/long-context-lab/results/v0.136-h1-model-history.json",
+      "version": "0.136.0",
+      "fixture_hashes": {
+        "F0-short-baseline": "7ad1c9734c24cdf3f76c493e92ea77957cd515b471de91382a1c5dc08e1a7ae2",
+        "F1-long-no-compact-5k": "466b71d931c7b0ae25e5bca199d90774fefb4c7a592d3e54c9b5f172bc4fee6e",
+        "F1-long-no-compact-20k": "909fccb61846f010b5abe2a06428eb01db108b45a026badd83919f41e896662d",
+        "F2-one-compact": "220d37a391cf6c5c4da523850be6751331a00fbbc1154ac6f3fac86a0e8296fa",
+        "F3-multi-compact-small-suffix": "d6fcf477cad667a20d76d86e774f1c48886b2b319b51ee6183b1c79c1f88b9ca",
+        "F7-mock-api-0ms": "f73efe76dc3626920f5205cd407501f23351ebcdec25020942387b805d894c36",
+        "F7-mock-api-100ms": "858eff49753d0c29d4ad09d8dec35722901a5116499e50f1e9810c7f4cd408fe"
+      },
+      "metric_summary": {
+        "post_compact_payload_bounded": true,
+        "max_post_compact_payload_bytes": 120352,
+        "min_post_compact_payload_bytes": 120352,
+        "cases": [
+          {
+            "pre_compact_payload_bytes": 6720,
+            "post_compact_payload_bytes": 15008,
+            "pre_compact_history_items": 20,
+            "post_compact_history_items": 21,
+            "selected_user_bytes_cap": 80000,
+            "name": "baseline_20",
+            "raw_user_count": 20,
+            "old_line_bytes": 240,
+            "post_to_pre_ratio": 2.233333
+          },
+          {
+            "pre_compact_payload_bytes": 1680000,
+            "post_compact_payload_bytes": 120352,
+            "pre_compact_history_items": 5000,
+            "post_compact_history_items": 335,
+            "selected_user_bytes_cap": 80000,
+            "name": "long_5k",
+            "raw_user_count": 5000,
+            "old_line_bytes": 240,
+            "post_to_pre_ratio": 0.071638
+          },
+          {
+            "pre_compact_payload_bytes": 6720000,
+            "post_compact_payload_bytes": 120352,
+            "pre_compact_history_items": 20000,
+            "post_compact_history_items": 335,
+            "selected_user_bytes_cap": 80000,
+            "name": "long_20k",
+            "raw_user_count": 20000,
+            "old_line_bytes": 240,
+            "post_to_pre_ratio": 0.01791
+          },
+          {
+            "pre_compact_payload_bytes": 33600000,
+            "post_compact_payload_bytes": 120352,
+            "pre_compact_history_items": 100000,
+            "post_compact_history_items": 335,
+            "selected_user_bytes_cap": 80000,
+            "name": "long_100k",
+            "raw_user_count": 100000,
+            "old_line_bytes": 240,
+            "post_to_pre_ratio": 0.003582
+          }
+        ]
+      },
+      "counter_evidence": "Compaction request itself is built from pre-compact history before replacement; the bounded claim applies after successful replacement.",
+      "next_action": "If later fixing TUI lag, keep model-history replacement semantics separate from UI transcript retention."
+    },
+    {
+      "id": "H2",
+      "layer": "rollout_replay_resume",
+      "hypothesis": "Resume lag comes from rollout reconstruction, replacement-history base, or replay suffix size.",
+      "version_coverage": "0.136 primary; 0.135 control only after 0.136 H2 confirmation",
+      "fixtures": [
+        "F2-one-compact",
+        "F3-multi-compact-small-suffix",
+        "F4-multi-compact-large-suffix"
+      ],
+      "metrics": [
+        "resume_to_prompt_ms",
+        "rollout_items_count",
+        "compacted_items_count",
+        "replay_suffix_items",
+        "rss_mb"
+      ],
+      "status": "inconclusive",
+      "confidence": "medium",
+      "evidence_paths": [
+        ".omx/long-context-lab/results/v0.136-h2-rollout-replay.json",
+        ".omx/long-context-lab/results/v0.136-code-evidence.json"
+      ],
+      "artifact_path": ".omx/long-context-lab/results/v0.136-h2-rollout-replay.json",
+      "version": "0.136.0",
+      "fixture_hashes": {
+        "F2-one-compact": "220d37a391cf6c5c4da523850be6751331a00fbbc1154ac6f3fac86a0e8296fa",
+        "F3-multi-compact-small-suffix": "d6fcf477cad667a20d76d86e774f1c48886b2b319b51ee6183b1c79c1f88b9ca",
+        "F4-multi-compact-large-suffix": "07118953af028d6ab42bad6424562ba040054e8090a6ced911d7582ab0aef7b7"
+      },
+      "metric_summary": {
+        "resume_to_prompt_ms_proxy": [
+          {
+            "name": "baseline_suffix_20",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.005,
+              "p50": 0.005,
+              "p95": 0.009,
+              "p99": 0.009,
+              "max": 0.009,
+              "raw": [
+                0.009,
+                0.007,
+                0.005,
+                0.005,
+                0.005,
+                0.005,
+                0.005
+              ]
+            },
+            "counters": {
+              "rollout_items_count": 45,
+              "reverse_items_scanned": 24,
+              "replacement_history_items": 4,
+              "replay_suffix_items": 20,
+              "rebuilt_history_items": 24
+            }
+          },
+          {
+            "name": "old_prefix_25k_suffix_100",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.015,
+              "p50": 0.016,
+              "p95": 0.018,
+              "p99": 0.019,
+              "max": 0.019,
+              "raw": [
+                0.019,
+                0.017,
+                0.017,
+                0.016,
+                0.016,
+                0.016,
+                0.015
+              ]
+            },
+            "counters": {
+              "rollout_items_count": 25105,
+              "reverse_items_scanned": 104,
+              "replacement_history_items": 4,
+              "replay_suffix_items": 100,
+              "rebuilt_history_items": 104
+            }
+          },
+          {
+            "name": "old_prefix_25k_suffix_5k",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.726,
+              "p50": 0.907,
+              "p95": 1.177,
+              "p99": 1.254,
+              "max": 1.274,
+              "raw": [
+                0.752,
+                0.749,
+                0.907,
+                1.274,
+                0.951,
+                0.913,
+                0.726
+              ]
+            },
+            "counters": {
+              "rollout_items_count": 30005,
+              "reverse_items_scanned": 5004,
+              "replacement_history_items": 4,
+              "replay_suffix_items": 5000,
+              "rebuilt_history_items": 5004
+            }
+          }
+        ],
+        "baseline_p95_ms": 0.009,
+        "max_p95_ms": 1.177,
+        "max_to_baseline_ratio": 130.778,
+        "threshold_ms": 1000
+      },
+      "counter_evidence": "This is a source-faithful Python replay proxy, not an instrumented Rust TUI resume measurement.",
+      "next_action": "Only run v0.135 control or Rust instrumentation if real resume-to-prompt p95 exceeds 1000ms."
+    },
+    {
+      "id": "H3",
+      "layer": "tui_transcript_reflow",
+      "hypothesis": "UI transcript cells and reflow/wrap work grow independently of compacted model history.",
+      "version_coverage": "0.136 primary; 0.135 control for regression only",
+      "fixtures": [
+        "F3-multi-compact-small-suffix",
+        "F5-small-model-large-transcript",
+        "F8-terminal-profile"
+      ],
+      "metrics": [
+        "transcript_cells_count",
+        "wrapped_line_count",
+        "resize_reflow_ms",
+        "keypress_echo_ms",
+        "rss_mb"
+      ],
+      "status": "confirmed",
+      "confidence": "medium",
+      "evidence_paths": [
+        ".omx/long-context-lab/results/v0.136-h3-tui-transcript.json",
+        ".omx/long-context-lab/results/v0.136-code-evidence.json"
+      ],
+      "artifact_path": ".omx/long-context-lab/results/v0.136-h3-tui-transcript.json",
+      "version": "0.136.0",
+      "fixture_hashes": {
+        "F3-multi-compact-small-suffix": "d6fcf477cad667a20d76d86e774f1c48886b2b319b51ee6183b1c79c1f88b9ca",
+        "F5-small-model-large-transcript": "fcefd224be58f488e120a5d7efc2e9b7abccc7b1d75c4d94d7a65d9d487fead8",
+        "F8-terminal-profile-1000": "c0f932a3a261eaa12f5c63593b0f83cee5cf7153d6a62ef0a4bba2646721e566",
+        "F8-terminal-profile-9001": "e1926cbf5d064849b7795fb6074af742f4dda122f72b983239930b5bfc4d3ba8",
+        "F8-terminal-profile-32767": "52055bc0b8a91f85e9d19ca2407793e99e053c3cd035fba50ede16cf1b31b4c5"
+      },
+      "metric_summary": {
+        "resize_reflow_ms_proxy": [
+          {
+            "name": "baseline_20_cells",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.013,
+              "p50": 0.013,
+              "p95": 0.024,
+              "p99": 0.027,
+              "max": 0.027,
+              "raw": [
+                0.016,
+                0.027,
+                0.014,
+                0.013,
+                0.013,
+                0.013,
+                0.013
+              ]
+            },
+            "counters": {
+              "cells_seen": 20,
+              "rendered_rows": 40,
+              "emitted_rows": 40
+            }
+          },
+          {
+            "name": "large_transcript_windows_cap",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 2.019,
+              "p50": 2.041,
+              "p95": 2.286,
+              "p99": 2.298,
+              "max": 2.3,
+              "raw": [
+                2.019,
+                2.3,
+                2.252,
+                2.038,
+                2.028,
+                2.19,
+                2.041
+              ]
+            },
+            "counters": {
+              "cells_seen": 2251,
+              "rendered_rows": 9004,
+              "emitted_rows": 9001
+            }
+          },
+          {
+            "name": "large_transcript_vscode_cap",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.219,
+              "p50": 0.22,
+              "p95": 0.236,
+              "p99": 0.237,
+              "max": 0.237,
+              "raw": [
+                0.237,
+                0.219,
+                0.22,
+                0.219,
+                0.228,
+                0.219,
+                0.233
+              ]
+            },
+            "counters": {
+              "cells_seen": 251,
+              "rendered_rows": 1004,
+              "emitted_rows": 1000
+            }
+          },
+          {
+            "name": "large_transcript_uncapped",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 26.631,
+              "p50": 27.672,
+              "p95": 28.668,
+              "p99": 28.8,
+              "max": 28.833,
+              "raw": [
+                28.282,
+                27.795,
+                26.631,
+                26.905,
+                27.672,
+                27.551,
+                28.833
+              ]
+            },
+            "counters": {
+              "cells_seen": 30000,
+              "rendered_rows": 120000,
+              "emitted_rows": 120000
+            }
+          }
+        ],
+        "baseline_p95_ms": 0.024,
+        "windows_cap_large_to_baseline_ratio": 95.25,
+        "confirmed_basis": "source shows transcript_cells persist and reflow rebuilds UI history independently of compacted model history; proxy demonstrates capped but nonzero suffix work."
+      },
+      "counter_evidence": "0.136 caps Windows Terminal resize reflow to 9001 rows, so this is not full raw-history replay on resize. Actual terminal p95 needs interactive PTY/terminal instrumentation.",
+      "next_action": "Future fix candidate C1/C2: virtualize/fold UI transcript after compaction while preserving rollout audit history."
+    },
+    {
+      "id": "H4",
+      "layer": "terminal_scrollback",
+      "hypothesis": "Windows Terminal scrollback/history profile is the dominant or amplifying cause.",
+      "version_coverage": "0.136 primary",
+      "fixtures": [
+        "F5-small-model-large-transcript",
+        "F8-terminal-profile"
+      ],
+      "metrics": [
+        "keypress_echo_ms",
+        "resize_reflow_ms",
+        "terminal_profile",
+        "cpu_pct_peak",
+        "rss_mb"
+      ],
+      "status": "inconclusive",
+      "confidence": "low",
+      "evidence_paths": [
+        ".omx/long-context-lab/results/v0.136-h4-terminal-scrollback.json",
+        ".omx/long-context-lab/results/v0.136-code-evidence.json"
+      ],
+      "artifact_path": ".omx/long-context-lab/results/v0.136-h4-terminal-scrollback.json",
+      "version": "0.136.0",
+      "fixture_hashes": {
+        "F5-small-model-large-transcript": "fcefd224be58f488e120a5d7efc2e9b7abccc7b1d75c4d94d7a65d9d487fead8",
+        "F8-terminal-profile-1000": "c0f932a3a261eaa12f5c63593b0f83cee5cf7153d6a62ef0a4bba2646721e566",
+        "F8-terminal-profile-9001": "e1926cbf5d064849b7795fb6074af742f4dda122f72b983239930b5bfc4d3ba8",
+        "F8-terminal-profile-32767": "52055bc0b8a91f85e9d19ca2407793e99e053c3cd035fba50ede16cf1b31b4c5"
+      },
+      "metric_summary": {
+        "terminal_cap_proxy": [
+          {
+            "name": "cap_1000",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.219,
+              "p50": 0.222,
+              "p95": 0.231,
+              "p99": 0.233,
+              "max": 0.233,
+              "raw": [
+                0.222,
+                0.219,
+                0.22,
+                0.221,
+                0.225,
+                0.233,
+                0.222
+              ]
+            },
+            "counters": {
+              "cells_seen": 251,
+              "rendered_rows": 1004,
+              "emitted_rows": 1000
+            }
+          },
+          {
+            "name": "cap_9001",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 1.921,
+              "p50": 2.393,
+              "p95": 2.776,
+              "p99": 2.778,
+              "max": 2.779,
+              "raw": [
+                2.779,
+                2.445,
+                2.769,
+                1.921,
+                1.967,
+                2.393,
+                1.975
+              ]
+            },
+            "counters": {
+              "cells_seen": 2251,
+              "rendered_rows": 9004,
+              "emitted_rows": 9001
+            }
+          },
+          {
+            "name": "cap_32767",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 7.148,
+              "p50": 7.519,
+              "p95": 8.979,
+              "p99": 9.439,
+              "max": 9.554,
+              "raw": [
+                7.264,
+                7.636,
+                7.148,
+                9.554,
+                7.573,
+                7.519,
+                7.47
+              ]
+            },
+            "counters": {
+              "cells_seen": 8192,
+              "rendered_rows": 32768,
+              "emitted_rows": 32767
+            }
+          }
+        ],
+        "cap_9001_to_1000_proxy_ratio": 12.017,
+        "terminal_profile_mutated": false
+      },
+      "counter_evidence": "The lab did not mutate or A/B Windows Terminal profiles, so emulator scrollback dominance cannot be proven offline.",
+      "next_action": "If user authorizes terminal-profile A/B, run an isolated Windows Terminal profile with scrollback 1000 vs 9001/32767 and scripted resize/key capture."
+    },
+    {
+      "id": "H5",
+      "layer": "history_insert_pre_wrap",
+      "hypothesis": "Bulk history insertion or wrapping creates bursts of lag.",
+      "version_coverage": "0.136 primary; 0.135 control if confirmed",
+      "fixtures": [
+        "F1-long-no-compact",
+        "F5-small-model-large-transcript",
+        "F8-terminal-profile"
+      ],
+      "metrics": [
+        "history_insert_ms",
+        "wrapped_line_count",
+        "render_frame_ms",
+        "cpu_pct_peak"
+      ],
+      "status": "confirmed",
+      "confidence": "medium",
+      "evidence_paths": [
+        ".omx/long-context-lab/results/v0.136-h5-history-insert.json",
+        ".omx/long-context-lab/results/v0.136-code-evidence.json"
+      ],
+      "artifact_path": ".omx/long-context-lab/results/v0.136-h5-history-insert.json",
+      "version": "0.136.0",
+      "fixture_hashes": {
+        "F1-long-no-compact-5k": "466b71d931c7b0ae25e5bca199d90774fefb4c7a592d3e54c9b5f172bc4fee6e",
+        "F1-long-no-compact-20k": "909fccb61846f010b5abe2a06428eb01db108b45a026badd83919f41e896662d",
+        "F5-small-model-large-transcript": "fcefd224be58f488e120a5d7efc2e9b7abccc7b1d75c4d94d7a65d9d487fead8",
+        "F8-terminal-profile-1000": "c0f932a3a261eaa12f5c63593b0f83cee5cf7153d6a62ef0a4bba2646721e566",
+        "F8-terminal-profile-9001": "e1926cbf5d064849b7795fb6074af742f4dda122f72b983239930b5bfc4d3ba8",
+        "F8-terminal-profile-32767": "52055bc0b8a91f85e9d19ca2407793e99e053c3cd035fba50ede16cf1b31b4c5"
+      },
+      "metric_summary": {
+        "history_insert_ms_proxy": [
+          {
+            "name": "baseline_20_lines",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.015,
+              "p50": 0.015,
+              "p95": 0.017,
+              "p99": 0.017,
+              "max": 0.017,
+              "raw": [
+                0.017,
+                0.016,
+                0.015,
+                0.015,
+                0.015,
+                0.015,
+                0.015
+              ]
+            },
+            "counters": {
+              "input_lines": 20,
+              "wrapped_rows": 40,
+              "output_chars": 3280
+            }
+          },
+          {
+            "name": "long_5k_lines",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 3.616,
+              "p50": 3.68,
+              "p95": 4.111,
+              "p99": 4.185,
+              "max": 4.204,
+              "raw": [
+                3.662,
+                3.702,
+                3.616,
+                4.204,
+                3.896,
+                3.669,
+                3.68
+              ]
+            },
+            "counters": {
+              "input_lines": 5000,
+              "wrapped_rows": 10000,
+              "output_chars": 820000
+            }
+          },
+          {
+            "name": "long_20k_lines",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 14.227,
+              "p50": 14.839,
+              "p95": 15.253,
+              "p99": 15.311,
+              "max": 15.325,
+              "raw": [
+                14.839,
+                14.227,
+                14.6,
+                14.482,
+                15.084,
+                15.325,
+                14.987
+              ]
+            },
+            "counters": {
+              "input_lines": 20000,
+              "wrapped_rows": 40000,
+              "output_chars": 3280000
+            }
+          },
+          {
+            "name": "large_ui_30k_lines",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 33.93,
+              "p50": 35.628,
+              "p95": 42.166,
+              "p99": 43.247,
+              "max": 43.517,
+              "raw": [
+                34.688,
+                34.755,
+                33.93,
+                35.628,
+                37.294,
+                39.014,
+                43.517
+              ]
+            },
+            "counters": {
+              "input_lines": 30000,
+              "wrapped_rows": 120000,
+              "output_chars": 9840000
+            }
+          }
+        ],
+        "baseline_p95_ms": 0.017,
+        "large_to_baseline_ratio": 2480.353,
+        "confirmed_basis": "source loops through every inserted history line, adaptively wraps, then queues terminal writes for every wrapped row; proxy scales with lines*wrap work."
+      },
+      "counter_evidence": "Proxy excludes actual terminal emulator rendering cost; real p95 should be captured later before code patching.",
+      "next_action": "Future fix candidate C4: cache pre-wrap results by width / avoid replaying unchanged history rows."
+    },
+    {
+      "id": "H6",
+      "layer": "input_draft_popup_sync",
+      "hypothesis": "Long current draft or pending paste causes O(n) work per keypress.",
+      "version_coverage": "0.136 primary; 0.135 control only if confirmed",
+      "fixtures": [
+        "F6-large-draft"
+      ],
+      "metrics": [
+        "keypress_echo_ms",
+        "draft_bytes",
+        "popup_state",
+        "cpu_pct_peak"
+      ],
+      "status": "rejected",
+      "confidence": "medium",
+      "evidence_paths": [
+        ".omx/long-context-lab/results/v0.136-h6-input-draft.json",
+        ".omx/long-context-lab/results/v0.136-code-evidence.json"
+      ],
+      "artifact_path": ".omx/long-context-lab/results/v0.136-h6-input-draft.json",
+      "version": "0.136.0",
+      "fixture_hashes": {
+        "F6-large-draft-1kb": "2422fc2cd253036a9997aa0cd2878e9e3e0b230509120782dcff80a9a294d33d",
+        "F6-large-draft-10kb": "7e51b6d2b1611d7c1fd7bf0d7e84bc93ba08aeca7700f5c5e4df5c166a829edd",
+        "F6-large-draft-100kb": "535dad93afc7b90d61c777846d19ffc5cd98a5a43d8782c1aae5ebab73d5b9e7",
+        "F6-large-draft-1mb": "b774cc6ce3fb7111a6dcf025a5e88e996977e538a7922decba8b8bf41b9a7245"
+      },
+      "metric_summary": {
+        "keypress_echo_ms_proxy": [
+          {
+            "name": "draft_1024",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.002,
+              "p50": 0.002,
+              "p95": 0.007,
+              "p99": 0.009,
+              "max": 0.009,
+              "raw": [
+                0.009,
+                0.003,
+                0.002,
+                0.002,
+                0.002,
+                0.002,
+                0.002
+              ]
+            },
+            "counters": {
+              "draft_bytes": 1024,
+              "bytes_touched_proxy": 2048,
+              "text_hash": "02d7160d77e18c6447be80c2e355c7ed4388545271702c50253b0914c65ce5fe"
+            }
+          },
+          {
+            "name": "draft_10240",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.002,
+              "p50": 0.002,
+              "p95": 0.003,
+              "p99": 0.003,
+              "max": 0.003,
+              "raw": [
+                0.003,
+                0.003,
+                0.002,
+                0.002,
+                0.002,
+                0.002,
+                0.002
+              ]
+            },
+            "counters": {
+              "draft_bytes": 10240,
+              "bytes_touched_proxy": 20480,
+              "text_hash": "02d7160d77e18c6447be80c2e355c7ed4388545271702c50253b0914c65ce5fe"
+            }
+          },
+          {
+            "name": "draft_102400",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.007,
+              "p50": 0.007,
+              "p95": 0.013,
+              "p99": 0.015,
+              "max": 0.016,
+              "raw": [
+                0.007,
+                0.007,
+                0.007,
+                0.007,
+                0.007,
+                0.016,
+                0.007
+              ]
+            },
+            "counters": {
+              "draft_bytes": 102400,
+              "bytes_touched_proxy": 204800,
+              "text_hash": "02d7160d77e18c6447be80c2e355c7ed4388545271702c50253b0914c65ce5fe"
+            }
+          },
+          {
+            "name": "draft_1048576",
+            "timing": {
+              "unit": "ms",
+              "count": 7,
+              "min": 0.689,
+              "p50": 0.755,
+              "p95": 0.829,
+              "p99": 0.848,
+              "max": 0.853,
+              "raw": [
+                0.689,
+                0.853,
+                0.756,
+                0.737,
+                0.738,
+                0.755,
+                0.774
+              ]
+            },
+            "counters": {
+              "draft_bytes": 1048576,
+              "bytes_touched_proxy": 2097152,
+              "text_hash": "02d7160d77e18c6447be80c2e355c7ed4388545271702c50253b0914c65ce5fe"
+            }
+          }
+        ],
+        "baseline_p95_ms": 0.007,
+        "one_mb_to_one_kb_ratio": 118.429,
+        "visible_threshold_ms": 100,
+        "algorithmic_note": "current_text clones the full textarea string; popup token sync can scan around cursor."
+      },
+      "counter_evidence": "Synthetic 1MB draft proxy stays below the visible threshold on this machine if status is rejected; real IME/paste/popups may differ.",
+      "next_action": "Keep C5 as a lower-priority candidate unless real keypress p95 for large drafts exceeds 100ms."
+    },
+    {
+      "id": "H7",
+      "layer": "api_dry_run",
+      "hypothesis": "The perceived lag is actually API/network/streaming latency, not local terminal/TUI.",
+      "version_coverage": "0.136 local dry-run only; real API excluded",
+      "fixtures": [
+        "F0-short-baseline",
+        "F7-mock-api-dry-run"
+      ],
+      "metrics": [
+        "mock_api_delay_ms",
+        "local_render_ms",
+        "keypress_echo_ms"
+      ],
+      "status": "rejected",
+      "confidence": "medium",
+      "evidence_paths": [
+        ".omx/long-context-lab/results/v0.136-h7-api-dry-run.json",
+        ".omx/long-context-lab/results/v0.136-code-evidence.json"
+      ],
+      "artifact_path": ".omx/long-context-lab/results/v0.136-h7-api-dry-run.json",
+      "version": "0.136.0",
+      "fixture_hashes": {
+        "F0-short-baseline": "7ad1c9734c24cdf3f76c493e92ea77957cd515b471de91382a1c5dc08e1a7ae2",
+        "F7-mock-api-0ms": "f73efe76dc3626920f5205cd407501f23351ebcdec25020942387b805d894c36",
+        "F7-mock-api-100ms": "858eff49753d0c29d4ad09d8dec35722901a5116499e50f1e9810c7f4cd408fe"
+      },
+      "metric_summary": {
+        "mock_api_wait_ms": [
+          {
+            "name": "mock_delay_0ms",
+            "timing": {
+              "unit": "ms",
+              "count": 3,
+              "min": 0.0,
+              "p50": 0.0,
+              "p95": 0.002,
+              "p99": 0.002,
+              "max": 0.002,
+              "raw": [
+                0.002,
+                0.0,
+                0.0
+              ]
+            },
+            "counters": {
+              "mock_api_delay_ms": 0,
+              "external_endpoint": 0
+            }
+          },
+          {
+            "name": "mock_delay_100ms",
+            "timing": {
+              "unit": "ms",
+              "count": 3,
+              "min": 100.254,
+              "p50": 100.364,
+              "p95": 100.533,
+              "p99": 100.548,
+              "max": 100.551,
+              "raw": [
+                100.364,
+                100.254,
+                100.551
+              ]
+            },
+            "counters": {
+              "mock_api_delay_ms": 100,
+              "external_endpoint": 0
+            }
+          }
+        ],
+        "real_api_called": false,
+        "local_terminal_code_paths": "resize/input/history insertion evidence has no model-client/API call dependency."
+      },
+      "counter_evidence": "This rejects API/network as the cause of local keypress/resize/history-insert lag, not all perceived waiting during streaming model turns.",
+      "next_action": "For streaming wait complaints, isolate with local mock endpoint separately; do not use real API unless explicitly authorized."
+    }
+  ],
+  "phase": "Phase 4 diagnosis synthesis",
+  "no_fix_implementation_started": true,
+  "api_audit_path": ".omx/long-context-lab/results/v0.136-api-audit.json",
+  "isolation_audit_path": ".omx/long-context-lab/results/v0.136-isolation-audit.json"
+}

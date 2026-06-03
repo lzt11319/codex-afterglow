@@ -1,0 +1,51 @@
+{
+  "goalId": "G009-resolve-resume-picker-compact-aware",
+  "status": "passed",
+  "createdAt": "2026-06-03T08:44:59.5097163Z",
+  "aiSlopCleaner": {
+    "status": "passed",
+    "evidence": ".omx/ultragoal/evidence/G009-ai-slop-cleaner.md"
+  },
+  "verification": {
+    "status": "passed",
+    "evidence": ".omx/ultragoal/evidence/G009-verification-postclean.log; .omx/ultragoal/evidence/G009-final-local-gate.log",
+    "commands": [
+      "cargo fmt --all -- --check",
+      "cargo test -p codex-tui compact_aware -- --nocapture",
+      "cargo test -p codex-tui compact_rebuild -- --nocapture",
+      "cargo test -p codex-tui transcript_preview_lines -- --nocapture",
+      "cargo test -p codex-tui synthetic_replay_pressure_is_bounded_after_compaction -- --nocapture",
+      "cargo test -p codex-core compact_aware -- --nocapture",
+      "cargo test -p codex-core config_schema -- --nocapture",
+      "git diff --check",
+      ".omx/patches/codex-tui-compact-aware-render/verify.ps1 -RepoRoot .",
+      ".omx/patches/codex-tui-compact-aware-render/effectiveness.ps1 -RepoRoot . -Quick"
+    ]
+  },
+  "codeReview": {
+    "recommendation": "APPROVE",
+    "architectStatus": "CLEAR",
+    "evidence": ".omx/ultragoal/evidence/G009-final-code-reviewer.md; .omx/ultragoal/evidence/G009-final-architect.md",
+    "independentReview": {
+      "codeReviewer": {
+        "agentRole": "code-reviewer",
+        "agentId": "019e8c9c-5780-7030-a64a-0423909bf57d",
+        "evidence": ".omx/ultragoal/evidence/G009-final-code-reviewer.md",
+        "result": "RECOMMENDATION: APPROVE"
+      },
+      "architect": {
+        "agentRole": "architect",
+        "agentId": "019e8c9d-07a6-7a22-9ebb-e38c8aa51273",
+        "evidence": ".omx/ultragoal/evidence/G009-final-architect.md",
+        "result": "ARCHITECTURAL STATUS: CLEAR"
+      }
+    }
+  },
+  "safety": {
+    "noRealApiCalls": true,
+    "noAuthReadOrCopied": true,
+    "globalCodexCliNotReplaced": true,
+    "sourceRepoOnlyForCodexCliPatch": true,
+    "notes": "Global upgrade-codex-omx skill was intentionally updated with semi-automatic patch verify/apply instructions; Codex CLI binary/config/auth were not replaced or polluted."
+  }
+}

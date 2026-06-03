@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Codex Afterglow Release Manifest",
+  "type": "object",
+  "required": ["schemaVersion", "codex", "afterglow", "targets", "sourceAnchors", "trust"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "codex": {
+      "type": "object",
+      "required": ["tag", "commit", "workspaceVersion"],
+      "properties": {
+        "tag": { "type": "string" },
+        "commit": { "type": "string" },
+        "workspaceVersion": { "type": "string" }
+      }
+    },
+    "afterglow": {
+      "type": "object",
+      "required": ["patchVersion", "patchSha256"],
+      "properties": {
+        "patchVersion": { "type": "string" },
+        "patchSha256": { "type": "string" }
+      }
+    },
+    "targets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["asset", "sha256", "binaryName"],
+        "properties": {
+          "asset": { "type": "string" },
+          "sha256": { "type": "string" },
+          "binaryName": { "type": "string" }
+        }
+      }
+    },
+    "sourceAnchors": {
+      "type": "object",
+      "required": ["files", "patchMarkers", "semanticTests"],
+      "properties": {
+        "files": { "type": "array", "items": { "type": "string" } },
+        "patchMarkers": { "type": "array", "items": { "type": "string" } },
+        "semanticTests": { "type": "array", "items": { "type": "string" } },
+        "selfCheck": { "type": "string" }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "required": ["attestations", "sbom", "signing", "reproducibleBuildNotes"],
+      "properties": {
+        "attestations": { "type": "string" },
+        "sbom": { "type": "string" },
+        "signing": { "type": "string" },
+        "reproducibleBuildNotes": { "type": "string" }
+      }
+    }
+  }
+}

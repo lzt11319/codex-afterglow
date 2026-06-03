@@ -1,0 +1,30 @@
+# Build and release outputs
+/dist/
+/target/
+/artifacts/
+/releases/
+/tmp/
+/logs/
+/backups/
+/downloads/
+
+# Test scratch
+/fixtures/**/work/
+/fixtures/**/backup/
+/fixtures/**/tmp/
+
+# Dependency caches
+node_modules/
+.pnpm-store/
+.bun/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

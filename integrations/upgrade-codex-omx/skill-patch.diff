@@ -1,0 +1,10 @@
+diff --git a/skills/upgrade-codex-omx/SKILL.md b/skills/upgrade-codex-omx/SKILL.md
+--- a/skills/upgrade-codex-omx/SKILL.md
++++ b/skills/upgrade-codex-omx/SKILL.md
+@@
+ ### Step 6. 判断是否要重跑 madmax 补丁
+ ...
++
++<!-- Insert integrations/upgrade-codex-omx/skill-step-snippet.md here. -->
+ 
+ ### Step 7. 明确额外生效步骤
