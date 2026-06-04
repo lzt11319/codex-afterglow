@@ -86,6 +86,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install requested Rust target for active toolchain
+        shell: bash
+        working-directory: upstream-codex/codex-rs
+        run: |
+          set -euo pipefail
+          rustup target add "${{ matrix.target }}"
+          rustup show active-toolchain
+          rustup target list --installed
+
       - name: Offline effectiveness tests
         shell: bash
         working-directory: upstream-codex/codex-rs
