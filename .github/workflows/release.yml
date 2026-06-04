@@ -24,6 +24,11 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_NET_RETRY: "10"
+
 jobs:
   build:
     name: build ${{ matrix.target }}
