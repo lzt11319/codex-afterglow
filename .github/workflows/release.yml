@@ -100,6 +100,16 @@ jobs:
           rustup show active-toolchain
           rustup target list --installed
 
+      - name: Offline effectiveness tests
+        shell: bash
+        working-directory: upstream-codex/codex-rs
+        run: |
+          set -euo pipefail
+          cargo test -p codex-tui compact_aware -- --nocapture
+          cargo test -p codex-tui compact_rebuild -- --nocapture
+          cargo test -p codex-core compact_aware -- --nocapture
+          cargo test -p codex-core config_schema -- --nocapture
+
       - name: Install Zig for Linux musl release build
         if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
@@ -149,16 +159,6 @@ jobs:
           fi
           echo "RUSTY_V8_ARCHIVE=${archive_path}" >> "${GITHUB_ENV}"
           echo "RUSTY_V8_SRC_BINDING_PATH=${binding_path}" >> "${GITHUB_ENV}"
-
-      - name: Offline effectiveness tests
-        shell: bash
-        working-directory: upstream-codex/codex-rs
-        run: |
-          set -euo pipefail
-          cargo test -p codex-tui compact_aware -- --nocapture
-          cargo test -p codex-tui compact_rebuild -- --nocapture
-          cargo test -p codex-core compact_aware -- --nocapture
-          cargo test -p codex-core config_schema -- --nocapture
 
       - name: Build Codex CLI
         shell: bash
