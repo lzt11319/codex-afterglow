@@ -2,6 +2,8 @@
 
 The release workflow is manual (`workflow_dispatch`) and draft-first. It must not publish a public release by accident.
 
+In practical terms, the GitHub Action is the binary release preparation step: it checks out upstream OpenAI Codex, applies the Afterglow patch, runs the compact-aware tests, builds target binaries, computes checksums, generates `afterglow.release.json`, and optionally creates a draft GitHub Release for maintainer review.
+
 ## Artifact shape
 
 V1 publishes raw target binaries plus `afterglow.release.json`. The installer intentionally does not need archive extraction or package-manager mutation:
@@ -36,6 +38,21 @@ Before a non-draft public release, decide and document:
 - Reproducible-build limitations.
 
 The workflow currently keeps top-level permissions read-only and grants `contents: write` only to the optional draft-release job. Attestation/SBOM/signing permissions should be added only when those gates are implemented and verified.
+
+## Manual run
+
+From a checked-out `codex-afterglow` repository with GitHub CLI authentication:
+
+```powershell
+gh workflow run build-afterglow-binaries.yml `
+  --ref master `
+  -f codex_tag=rust-v0.136.0 `
+  -f codex_commit=7ca611348db9446711ed16ed81c84095e3721cee `
+  -f patch_version=0.1.0-alpha.0 `
+  -f create_draft_release=true
+```
+
+This creates a draft release named `afterglow-v0.1.0-alpha.0` only if all matrix builds and manifest generation succeed.
 
 ## Public release gate
 

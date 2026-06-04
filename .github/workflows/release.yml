@@ -166,4 +166,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "afterglow-${{ inputs.patch_version }}" dist/assets/* dist/afterglow.release.json --draft --title "Codex Afterglow ${{ inputs.patch_version }}" --notes "Draft binary release. Verify trust gate before publishing."
+          gh release create "afterglow-v${{ inputs.patch_version }}" dist/assets/* dist/afterglow.release.json --draft --title "Codex Afterglow ${{ inputs.patch_version }}" --notes "Draft binary release. Verify docs/release-trust.md before publishing. Codex Afterglow is an unofficial companion workaround, not an official OpenAI release."

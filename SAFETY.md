@@ -20,7 +20,7 @@ Codex Afterglow replaces a coding-agent vendor binary only after explicit instal
 
 ## Trust gate
 
-Before any public release, the project must decide and document:
+Before any non-draft binary release, the project must decide and document:
 
 - GitHub artifact attestations: planned / deferred.
 - SBOM: planned / deferred.

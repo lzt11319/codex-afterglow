@@ -75,7 +75,7 @@ Set to `false` to retain legacy full visible-history rendering.
 
 ## Companion proof-of-concept/workaround
 
-A companion repo is being prepared at https://github.com/lzt11319/codex-afterglow. It packages a compact-aware TUI patch and binary-first installer as a user workaround/proof-of-concept. It is not official and should not be treated as a substitute for an upstream fix.
+A companion repo is available at https://github.com/lzt11319/codex-afterglow. It packages a compact-aware TUI patch and binary-first installer as a user workaround/proof-of-concept. It is not official and should not be treated as a substitute for an upstream fix.
 
 ## Posting checklist
 

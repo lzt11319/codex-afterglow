@@ -10,5 +10,13 @@
     "install:dry-run": "node install/install.mjs --dry-run --json",
     "status": "node scripts/afterglow-status.mjs --json"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lzt11319/codex-afterglow.git"
+  },
+  "homepage": "https://github.com/lzt11319/codex-afterglow#readme",
+  "bugs": {
+    "url": "https://github.com/lzt11319/codex-afterglow/issues"
+  }
 }

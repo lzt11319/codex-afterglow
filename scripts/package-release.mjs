@@ -5,7 +5,7 @@ import path from 'node:path';
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help || !args.asset || !args.targetTriple) {
-  console.log('Usage: node scripts/package-release.mjs --asset <archive> --target-triple <triple> --codex-tag <tag> --patch-version <version> [--out-dir dist/metadata]');
+  console.log('Usage: node scripts/package-release.mjs --asset <binary> --target-triple <triple> --codex-tag <tag> --patch-version <version> [--out-dir dist/metadata]');
   process.exit(args.help ? 0 : 2);
 }
 const asset = path.resolve(args.asset);

@@ -4,7 +4,9 @@ Codex Afterglow fixes a specific Codex CLI pain point: after a long session is c
 
 Afterglow is a binary-first companion patch for Codex CLI. It installs a compact-aware TUI renderer that folds pre-compaction transcript history, preserves the last pre-compaction turn and all post-compaction content, and keeps a config fallback for full-history rendering.
 
-> Status: alpha staging. The local repo is ready for review, but public repo creation, first release publishing, and upstream issue/PR posting are still confirmation-gated. If no GitHub release assets exist yet, stop at dry-run and report that the binary release is not available.
+> Status: public alpha. The repository is public and the installer, tests, docs, and draft-first release workflow are ready for review. First binary release publishing and upstream issue/PR posting are still separate maintainer-gated steps. If no GitHub release assets exist yet, stop at dry-run and report that the binary release is not available.
+
+Codex Afterglow is not an official OpenAI project. It is a companion workaround and proof-of-concept while the preferred long-term fix remains an upstream Codex TUI change.
 
 ## Easy Start
 
@@ -18,7 +20,7 @@ Why this prompt is the recommended route: replacing a coding-agent binary is hig
 
 ## Binary install path
 
-After a release is published, the binary path is:
+After a binary release is published, the binary path is:
 
 1. Clone or inspect this repository.
 2. Run the installer in dry-run mode.
@@ -60,9 +62,9 @@ The installer prints a rollback command. Save it before restarting Codex.
 - Does not replace npm/bun wrappers or local Glow Mirror/wrapper chains by default.
 - Refuses unknown install styles unless the user provides `--codex-binary <path>`.
 - Creates a backup before replacement and prints a rollback command.
-- Public repo creation, release publishing, and upstream issue/PR posting remain separately confirmation-gated during development.
+- The public repository does not imply that binaries are published or endorsed; release publishing and upstream issue/PR posting remain separate maintainer-gated steps.
 
-See [SAFETY.md](SAFETY.md), [docs/installer.md](docs/installer.md), and [docs/rollback.md](docs/rollback.md).
+See [SAFETY.md](SAFETY.md), [SECURITY.md](SECURITY.md), [docs/installer.md](docs/installer.md), and [docs/rollback.md](docs/rollback.md).
 
 ## Why compaction alone does not solve this
 
@@ -114,7 +116,7 @@ Restart Codex after changing the config.
 | `upstream/` | Draft issue/PR materials for OpenAI Codex. |
 | `fixtures/` | Disposable package fixtures for installer tests. |
 | `tests/` | Fixture-based test harness. |
-| `.github/workflows/` | Draft release workflow. |
+| `.github/workflows/` | Manual draft-first binary release workflow. |
 
 ## Development and verification
 
