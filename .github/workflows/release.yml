@@ -100,18 +100,54 @@ jobs:
           rustup show active-toolchain
           rustup target list --installed
 
-      - name: Configure Linux musl C toolchain
+      - name: Install Zig for Linux musl release build
+        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Configure Linux musl release toolchain
         if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          target_env=$(printf '%s' "${{ matrix.target }}" | tr '-' '_')
-          echo "CC_${target_env}=musl-gcc" >> "$GITHUB_ENV"
-          upper_target=$(printf '%s' "${{ matrix.target }}" | tr '[:lower:]-' '[:upper:]_')
-          echo "CARGO_TARGET_${upper_target}_LINKER=musl-gcc" >> "$GITHUB_ENV"
-          musl-gcc --version
+          bash "${GITHUB_WORKSPACE}/upstream-codex/.github/scripts/install-musl-build-tools.sh"
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          target_no_jitter="AWS_LC_SYS_NO_JITTER_ENTROPY_${TARGET}"
+          target_no_jitter="${target_no_jitter//-/_}"
+          echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
+
+      - name: Configure OpenAI Codex rusty_v8 artifacts
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version="$(python3 "${GITHUB_WORKSPACE}/upstream-codex/.github/scripts/rusty_v8_bazel.py" resolved-v8-crate-version)"
+          release_tag="rusty-v8-v${version}"
+          base_url="https://github.com/openai/codex/releases/download/${release_tag}"
+          binding_dir="${RUNNER_TEMP}/rusty_v8"
+          archive_path="${binding_dir}/librusty_v8_release_${TARGET}.a.gz"
+          binding_path="${binding_dir}/src_binding_release_${TARGET}.rs"
+          checksums_path="${binding_dir}/rusty_v8_release_${TARGET}.sha256"
+          mkdir -p "${binding_dir}"
+          curl -fsSL --retry 10 --retry-connrefused "${base_url}/librusty_v8_release_${TARGET}.a.gz" -o "${archive_path}"
+          curl -fsSL --retry 10 --retry-connrefused "${base_url}/src_binding_release_${TARGET}.rs" -o "${binding_path}"
+          curl -fsSL --retry 10 --retry-connrefused "${base_url}/rusty_v8_release_${TARGET}.sha256" -o "${checksums_path}"
+          if [[ "$(wc -l < "${checksums_path}")" -ne 2 ]]; then
+            echo "Expected exactly two checksums for ${TARGET} in ${checksums_path}" >&2
+            exit 1
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd "${binding_dir}" && sha256sum -c "${checksums_path}")
+          else
+            (cd "${binding_dir}" && shasum -a 256 -c "${checksums_path}")
+          fi
+          echo "RUSTY_V8_ARCHIVE=${archive_path}" >> "${GITHUB_ENV}"
+          echo "RUSTY_V8_SRC_BINDING_PATH=${binding_path}" >> "${GITHUB_ENV}"
 
       - name: Offline effectiveness tests
         shell: bash
@@ -128,7 +164,7 @@ jobs:
         working-directory: upstream-codex/codex-rs
         run: |
           set -euo pipefail
-          cargo build --release -p codex-cli --target "${{ matrix.target }}"
+          cargo build --release -p codex-cli --target "${{ matrix.target }}" --bin codex
 
       - name: Stage binary
         shell: bash
@@ -194,3 +230,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "afterglow-v${{ inputs.patch_version }}" dist/assets/* dist/afterglow.release.json --draft --title "Codex Afterglow ${{ inputs.patch_version }}" --notes "Draft binary release. Verify docs/release-trust.md before publishing. Codex Afterglow is an unofficial companion workaround, not an official OpenAI release."
+
