@@ -1,4 +1,4 @@
-name: build-afterglow-binaries
+name: build-afterglow-linux-debug
 
 on:
   workflow_dispatch:
@@ -15,11 +15,6 @@ on:
         description: Afterglow patch/release version
         required: true
         default: 0.1.0-alpha.0
-      create_draft_release:
-        description: Create a draft GitHub release after artifacts build
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -30,7 +25,7 @@ env:
   CARGO_NET_RETRY: "10"
 
 jobs:
-  build:
+  build-linux:
     name: build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -45,25 +40,8 @@ jobs:
             runner: ubuntu-24.04-arm
             binary: codex
             asset_ext: ""
-          - target: x86_64-apple-darwin
-            runner: macos-15-intel
-            binary: codex
-            asset_ext: ""
-          - target: aarch64-apple-darwin
-            runner: macos-latest
-            binary: codex
-            asset_ext: ""
-          - target: x86_64-pc-windows-msvc
-            runner: windows-latest
-            binary: codex.exe
-            asset_ext: ".exe"
-          - target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
-            binary: codex.exe
-            asset_ext: ".exe"
     steps:
       - name: Free Linux runner disk space
-        if: ${{ runner.os == 'Linux' }}
         shell: bash
         run: |
           set -euxo pipefail
@@ -123,7 +101,6 @@ jobs:
           cargo test -p codex-core config_schema -- --nocapture
 
       - name: Free offline test build artifacts before Linux release build
-        if: ${{ runner.os == 'Linux' }}
         shell: bash
         working-directory: upstream-codex/codex-rs
         run: |
@@ -133,14 +110,12 @@ jobs:
           df -h .
 
       - name: Install Zig for Linux musl release build
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with:
           version: 0.14.0
           use-cache: false
 
       - name: Configure Linux musl release toolchain
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -153,7 +128,6 @@ jobs:
           echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
 
       - name: Configure OpenAI Codex rusty_v8 artifacts
-        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -174,11 +148,7 @@ jobs:
             echo "Expected exactly two checksums for ${TARGET} in ${checksums_path}" >&2
             exit 1
           fi
-          if command -v sha256sum >/dev/null 2>&1; then
-            (cd "${binding_dir}" && sha256sum -c "${checksums_path}")
-          else
-            (cd "${binding_dir}" && shasum -a 256 -c "${checksums_path}")
-          fi
+          (cd "${binding_dir}" && sha256sum -c "${checksums_path}")
           echo "RUSTY_V8_ARCHIVE=${archive_path}" >> "${GITHUB_ENV}"
           echo "RUSTY_V8_SRC_BINDING_PATH=${binding_path}" >> "${GITHUB_ENV}"
 
@@ -187,11 +157,9 @@ jobs:
         working-directory: upstream-codex/codex-rs
         run: |
           set -euo pipefail
-          if [[ "${{ runner.os }}" == "Linux" ]]; then
-            export CARGO_INCREMENTAL=0
-            export CARGO_PROFILE_RELEASE_LTO=thin
-            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
-          fi
+          export CARGO_INCREMENTAL=0
+          export CARGO_PROFILE_RELEASE_LTO=thin
+          export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           cargo build --release -p codex-cli --target "${{ matrix.target }}" --bin codex
 
       - name: Stage binary
@@ -212,50 +180,7 @@ jobs:
       - name: Upload target artifact
         uses: actions/upload-artifact@v4
         with:
-          name: afterglow-${{ matrix.target }}
+          name: afterglow-linux-debug-${{ matrix.target }}
           path: |
             dist/codex-afterglow-*
             dist/metadata/*.json
-
-  manifest:
-    name: generate manifest
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: downloaded-artifacts
-      - name: Collect metadata
-        run: |
-          mkdir -p dist/metadata dist/assets
-          find downloaded-artifacts -name '*.asset.json' -exec cp {} dist/metadata/ \;
-          find downloaded-artifacts -type f -name 'codex-afterglow-*' ! -name '*.json' -exec cp {} dist/assets/ \;
-          node scripts/generate-release-manifest.mjs --metadata-dir dist/metadata --out dist/afterglow.release.json
-      - name: Upload release bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: afterglow-release-bundle
-          path: |
-            dist/assets/*
-            dist/afterglow.release.json
-            dist/metadata/*.json
-
-  draft-release:
-    name: create draft release
-    runs-on: ubuntu-latest
-    needs: manifest
-    if: ${{ inputs.create_draft_release }}
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: afterglow-release-bundle
-          path: dist
-      - name: Create draft release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "afterglow-v${{ inputs.patch_version }}" dist/assets/* dist/afterglow.release.json --draft --title "Codex Afterglow ${{ inputs.patch_version }}" --notes "Draft binary release. Verify docs/release-trust.md before publishing. Codex Afterglow is an unofficial companion workaround, not an official OpenAI release."
-
