@@ -121,6 +121,7 @@ jobs:
           echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
 
       - name: Configure OpenAI Codex rusty_v8 artifacts
+        if: ${{ contains(matrix.target, 'unknown-linux-musl') }}
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
