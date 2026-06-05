@@ -74,8 +74,13 @@ cargo test -p codex-core config_schema -- --nocapture
 
 Additional local validation before opening this PR:
 
+- `just fmt` completed successfully in `codex-rs`.
+- `git diff --check` completed successfully.
 - Patch series applies cleanly on `rust-v0.136.0` / `7ca611348db9446711ed16ed81c84095e3721cee`.
+- Current-main adaptation was applied against `openai/codex@55aa071b17c825bdb66fac99cde2e7a7acfbdee7`.
 - `Cargo.lock` version churn from the companion build is excluded from the upstream patch series.
+
+I attempted current-main scoped local checks on Windows (`just test -p codex-tui compact_aware` and `cargo check -p codex-tui`). They were blocked before compiling the PR code by local third-party native build environment issues (`aws-lc-sys` C/ASM/CMake generator configuration, then `v8` requiring symlink privileges). I am relying on repository CI for full cross-platform compilation/testing.
 
 ## Non-goals
 
