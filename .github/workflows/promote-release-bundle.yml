@@ -1,0 +1,64 @@
+name: promote-afterglow-release-bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Workflow run ID that uploaded afterglow-release-bundle
+        required: true
+      patch_version:
+        description: Afterglow patch/release version
+        required: true
+        default: 0.1.0-alpha.0
+      create_draft_release:
+        description: Create a draft GitHub release from the bundle
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  promote:
+    name: create draft release from existing bundle
+    runs-on: ubuntu-latest
+    if: ${{ inputs.create_draft_release }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: afterglow-release-bundle
+          path: dist
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATCH_VERSION: ${{ inputs.patch_version }}
+          REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+
+          tag="afterglow-v${PATCH_VERSION}"
+          source_sha="$(gh run view "${SOURCE_RUN_ID}" --repo "${REPO}" --json headSha --jq .headSha)"
+
+          echo "Promoting bundle from run ${SOURCE_RUN_ID} (${source_sha})"
+          ls -lh dist dist/assets
+
+          if gh release view "${tag}" --repo "${REPO}" >/dev/null 2>&1; then
+            echo "Release already exists: ${tag}"
+            exit 1
+          fi
+
+          gh release create "${tag}" \
+            dist/assets/* \
+            dist/afterglow.release.json \
+            --repo "${REPO}" \
+            --target "${source_sha}" \
+            --draft \
+            --title "Codex Afterglow ${PATCH_VERSION}" \
+            --notes "Draft binary release promoted from workflow run https://github.com/${REPO}/actions/runs/${SOURCE_RUN_ID} (built commit ${source_sha}). Verify docs/release-trust.md before publishing. Codex Afterglow is an unofficial companion workaround, not an official OpenAI release."
