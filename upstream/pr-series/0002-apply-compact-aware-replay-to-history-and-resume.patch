@@ -1,0 +1,851 @@
+diff --git a/codex-rs/tui/src/chatwidget/replay.rs b/codex-rs/tui/src/chatwidget/replay.rs
+index f0211aa..0eb707f 100644
+--- a/codex-rs/tui/src/chatwidget/replay.rs
++++ b/codex-rs/tui/src/chatwidget/replay.rs
+@@ -4,6 +4,12 @@
+ //! live-only side effects.
+ 
+ use super::*;
++use crate::compact_aware_replay::CompactReplayItem;
++use crate::compact_aware_replay::CompactReplayMode;
++use crate::compact_aware_replay::CompactReplayPlan;
++use crate::compact_aware_replay::CompactReplayTurn;
++use crate::compact_aware_replay::FoldedItems;
++use crate::compact_aware_replay::FoldedPrefix;
+ 
+ impl ChatWidget {
+     /// Replay a subset of initial events into the UI to seed the transcript when
+@@ -12,48 +18,88 @@ impl ChatWidget {
+     /// avoid triggering side effects. Event ids are passed as `None` to
+     /// distinguish replayed events from live ones.
+     pub(crate) fn replay_thread_turns(&mut self, turns: Vec<Turn>, replay_kind: ReplayKind) {
+-        for turn in turns {
+-            let Turn {
+-                id: turn_id,
+-                items_view: _,
+-                items,
+-                status,
+-                error,
+-                started_at,
+-                completed_at,
+-                duration_ms,
+-            } = turn;
+-            if matches!(status, TurnStatus::InProgress) {
+-                self.last_non_retry_error = None;
+-                self.on_task_started();
+-            }
+-            for item in items {
+-                self.replay_thread_item(item, turn_id.clone(), replay_kind);
++        let mode = CompactReplayMode::from_config(&self.config);
++        let plan = CompactReplayPlan::from_turns(&turns, mode);
++        self.replay_compact_plan(plan, replay_kind);
++    }
++
++    pub(crate) fn reset_transcript_for_compact_rebuild(&mut self) {
++        self.transcript = TranscriptState::default();
++        self.last_rendered_user_message_display = None;
++        self.full_reasoning_buffer.clear();
++        self.reasoning_buffer.clear();
++        self.plan_stream_controller = None;
++        self.active_hook_cell = None;
++        self.turn_lifecycle.reset_thread();
++        self.update_task_running_state();
++    }
++
++    pub(crate) fn replay_compact_plan(&mut self, plan: CompactReplayPlan, replay_kind: ReplayKind) {
++        if let Some(prefix) = plan.folded_prefix {
++            self.add_folded_prefix(prefix);
++        }
++        for turn in plan.turns {
++            self.replay_compact_turn(turn, replay_kind);
++        }
++    }
++
++    fn replay_compact_turn(&mut self, turn: CompactReplayTurn, replay_kind: ReplayKind) {
++        let CompactReplayTurn {
++            id: turn_id,
++            items,
++            items_view: _,
++            status,
++            error,
++            started_at,
++            completed_at,
++            duration_ms,
++            source: _,
++        } = turn;
++        if status == TurnStatus::InProgress {
++            self.last_non_retry_error = None;
++            self.on_task_started();
++        }
++        for item in items {
++            match item {
++                CompactReplayItem::Canonical(item) => {
++                    self.replay_thread_item(item, turn_id.clone(), replay_kind);
++                }
++                CompactReplayItem::FoldedItems(items) => {
++                    self.add_folded_items(items);
++                }
+             }
+-            if matches!(
+-                status,
+-                TurnStatus::Completed | TurnStatus::Interrupted | TurnStatus::Failed
+-            ) {
+-                self.handle_turn_completed_notification(
+-                    TurnCompletedNotification {
+-                        thread_id: self.thread_id.map(|id| id.to_string()).unwrap_or_default(),
+-                        turn: Turn {
+-                            id: turn_id,
+-                            items_view: codex_app_server_protocol::TurnItemsView::NotLoaded,
+-                            items: Vec::new(),
+-                            status,
+-                            error,
+-                            started_at,
+-                            completed_at,
+-                            duration_ms,
+-                        },
++        }
++        if status == TurnStatus::Completed
++            || status == TurnStatus::Interrupted
++            || status == TurnStatus::Failed
++        {
++            self.handle_turn_completed_notification(
++                TurnCompletedNotification {
++                    thread_id: self.thread_id.map(|id| id.to_string()).unwrap_or_default(),
++                    turn: Turn {
++                        id: turn_id,
++                        items_view: codex_app_server_protocol::TurnItemsView::NotLoaded,
++                        items: Vec::new(),
++                        status,
++                        error,
++                        started_at,
++                        completed_at,
++                        duration_ms,
+                     },
+-                    Some(replay_kind),
+-                );
+-            }
++                },
++                Some(replay_kind),
++            );
+         }
+     }
+ 
++    fn add_folded_prefix(&mut self, prefix: FoldedPrefix) {
++        self.add_info_message(prefix.display_message(), /*hint*/ None);
++    }
++
++    fn add_folded_items(&mut self, items: FoldedItems) {
++        self.add_info_message(items.display_message(), /*hint*/ None);
++    }
++
+     pub(crate) fn replay_thread_item(
+         &mut self,
+         item: ThreadItem,
+diff --git a/codex-rs/tui/src/chatwidget/tests/history_replay.rs b/codex-rs/tui/src/chatwidget/tests/history_replay.rs
+index e6b9d4e..4b002e9 100644
+--- a/codex-rs/tui/src/chatwidget/tests/history_replay.rs
++++ b/codex-rs/tui/src/chatwidget/tests/history_replay.rs
+@@ -75,6 +75,85 @@ async fn resumed_initial_messages_render_history() {
+     );
+ }
+ 
++#[tokio::test]
++async fn compact_aware_replay_folds_pre_compaction_history_by_default() {
++    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
++
++    let user = |id: &str, text: &str| codex_app_server_protocol::ThreadItem::UserMessage {
++        id: id.to_string(),
++        client_id: None,
++        content: vec![codex_app_server_protocol::UserInput::Text {
++            text: text.to_string(),
++            text_elements: Vec::new(),
++        }],
++    };
++    let agent = |id: &str, text: &str| codex_app_server_protocol::ThreadItem::AgentMessage {
++        id: id.to_string(),
++        text: text.to_string(),
++        phase: Some(codex_protocol::models::MessagePhase::FinalAnswer),
++        memory_citation: None,
++    };
++    let turn = |id: &str, items: Vec<codex_app_server_protocol::ThreadItem>| {
++        codex_app_server_protocol::Turn {
++            id: id.to_string(),
++            items,
++            items_view: codex_app_server_protocol::TurnItemsView::Full,
++            status: codex_app_server_protocol::TurnStatus::Completed,
++            error: None,
++            started_at: None,
++            completed_at: None,
++            duration_ms: None,
++        }
++    };
++
++    chat.replay_thread_turns(
++        vec![
++            turn("old", vec![user("old-user", "old prefix user")]),
++            turn(
++                "final-before-compact",
++                vec![
++                    user("final-user", "final pre-compact user"),
++                    codex_app_server_protocol::ThreadItem::CommandExecution {
++                        id: "cmd".to_string(),
++                        command: "echo heavy".to_string(),
++                        cwd: test_path_buf("/tmp/project").abs(),
++                        process_id: None,
++                        source: codex_app_server_protocol::CommandExecutionSource::Agent,
++                        status: codex_app_server_protocol::CommandExecutionStatus::Completed,
++                        command_actions: Vec::new(),
++                        aggregated_output: Some("heavy legacy tool output".to_string()),
++                        exit_code: Some(0),
++                        duration_ms: Some(1),
++                    },
++                    agent("final-answer", "final answer before compact"),
++                ],
++            ),
++            turn(
++                "compact",
++                vec![codex_app_server_protocol::ThreadItem::ContextCompaction {
++                    id: "compact".to_string(),
++                }],
++            ),
++            turn("suffix", vec![user("suffix-user", "post compact user")]),
++        ],
++        ReplayKind::ResumeInitialMessages,
++    );
++
++    let rendered = drain_insert_history(&mut rx)
++        .iter()
++        .map(|lines| lines_to_single_string(lines))
++        .collect::<Vec<_>>()
++        .join("\n");
++
++    assert!(rendered.contains("Earlier pre-compaction transcript folded"));
++    assert!(rendered.contains("Folded heavy pre-compaction turn content"));
++    assert!(rendered.contains("final pre-compact user"));
++    assert!(rendered.contains("final answer before compact"));
++    assert!(rendered.contains("post compact user"));
++    assert!(!rendered.contains("old prefix user"));
++    assert!(!rendered.contains("heavy legacy tool output"));
++}
++
+ #[tokio::test]
+ async fn replayed_user_messages_seed_composer_history() {
+     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+diff --git a/codex-rs/tui/src/resume_picker.rs b/codex-rs/tui/src/resume_picker.rs
+index 2d8619d..08fbd9f 100644
+--- a/codex-rs/tui/src/resume_picker.rs
++++ b/codex-rs/tui/src/resume_picker.rs
+@@ -9,6 +9,9 @@ mod transcript;
+ use crate::app_server_session::AppServerSession;
+ use crate::color::blend;
+ use crate::color::is_light;
++use crate::compact_aware_replay::CompactReplayItem;
++use crate::compact_aware_replay::CompactReplayMode;
++use crate::compact_aware_replay::CompactReplayPlan;
+ use crate::git_action_directives::parse_assistant_markdown;
+ use crate::key_hint::KeyBindingListExt;
+ use crate::key_hint::is_plain_text_key_event;
+@@ -378,6 +381,7 @@ async fn run_resume_picker_with_launch_context(
+             app_server,
+             include_non_interactive,
+             raw_reasoning_visibility(config),
++            CompactReplayMode::from_config(config),
+             bg_tx,
+         ),
+         bg_rx,
+@@ -423,6 +427,7 @@ pub async fn run_fork_picker_with_app_server(
+             app_server,
+             /*include_non_interactive*/ false,
+             raw_reasoning_visibility(config),
++            CompactReplayMode::from_config(config),
+             bg_tx,
+         ),
+         bg_rx,
+@@ -557,6 +562,7 @@ fn spawn_app_server_page_loader(
+     app_server: AppServerSession,
+     include_non_interactive: bool,
+     raw_reasoning_visibility: RawReasoningVisibility,
++    compact_replay_mode: CompactReplayMode,
+     bg_tx: mpsc::UnboundedSender<BackgroundEvent>,
+ ) -> PickerLoader {
+     let (request_tx, mut request_rx) = mpsc::unbounded_channel::<PickerLoadRequest>();
+@@ -583,7 +589,9 @@ fn spawn_app_server_page_loader(
+                     });
+                 }
+                 PickerLoadRequest::Preview { thread_id } => {
+-                    let preview = load_transcript_preview(&mut app_server, thread_id).await;
++                    let preview =
++                        load_transcript_preview(&mut app_server, thread_id, compact_replay_mode)
++                            .await;
+                     let _ = bg_tx.send(BackgroundEvent::Preview { thread_id, preview });
+                 }
+                 PickerLoadRequest::Transcript { thread_id } => {
+@@ -591,6 +599,7 @@ fn spawn_app_server_page_loader(
+                         &mut app_server,
+                         thread_id,
+                         raw_reasoning_visibility,
++                        compact_replay_mode,
+                     )
+                     .await;
+                     let _ = bg_tx.send(BackgroundEvent::Transcript {
+@@ -771,36 +780,32 @@ async fn load_app_server_page(
+ async fn load_transcript_preview(
+     app_server: &mut AppServerSession,
+     thread_id: ThreadId,
++    compact_replay_mode: CompactReplayMode,
+ ) -> std::io::Result<Vec<TranscriptPreviewLine>> {
+-    const MAX_PREVIEW_LINES: usize = 6;
+-
+     let thread = app_server
+         .thread_read(thread_id, /*include_turns*/ true)
+         .await
+         .map_err(std::io::Error::other)?;
+-    let mut lines = thread
++    Ok(thread_to_transcript_preview_lines(
++        &thread,
++        compact_replay_mode,
++    ))
++}
++
++fn thread_to_transcript_preview_lines(
++    thread: &Thread,
++    compact_replay_mode: CompactReplayMode,
++) -> Vec<TranscriptPreviewLine> {
++    const MAX_PREVIEW_LINES: usize = 6;
++
++    let plan = CompactReplayPlan::from_turns(&thread.turns, compact_replay_mode);
++    let mut lines = plan
+         .turns
+         .iter()
+         .flat_map(|turn| turn.items.iter())
+         .filter_map(|item| match item {
+-            ThreadItem::UserMessage { content, .. } => Some(TranscriptPreviewLine {
+-                speaker: TranscriptPreviewSpeaker::User,
+-                text: content
+-                    .iter()
+-                    .filter_map(|input| match input {
+-                        codex_app_server_protocol::UserInput::Text { text, .. } => {
+-                            Some(text.as_str())
+-                        }
+-                        _ => None,
+-                    })
+-                    .collect::<Vec<_>>()
+-                    .join(" "),
+-            }),
+-            ThreadItem::AgentMessage { text, .. } => Some(TranscriptPreviewLine {
+-                speaker: TranscriptPreviewSpeaker::Assistant,
+-                text: parse_assistant_markdown(text).visible_markdown,
+-            }),
+-            _ => None,
++            CompactReplayItem::Canonical(item) => transcript_preview_line_from_item(item),
++            CompactReplayItem::FoldedItems(_) => None,
+         })
+         .flat_map(|line| {
+             line.text
+@@ -816,7 +821,28 @@ async fn load_transcript_preview(
+     if lines.len() > MAX_PREVIEW_LINES {
+         lines.drain(..lines.len() - MAX_PREVIEW_LINES);
+     }
+-    Ok(lines)
++    lines
++}
++
++fn transcript_preview_line_from_item(item: &ThreadItem) -> Option<TranscriptPreviewLine> {
++    match item {
++        ThreadItem::UserMessage { content, .. } => Some(TranscriptPreviewLine {
++            speaker: TranscriptPreviewSpeaker::User,
++            text: content
++                .iter()
++                .filter_map(|input| match input {
++                    codex_app_server_protocol::UserInput::Text { text, .. } => Some(text.as_str()),
++                    _ => None,
++                })
++                .collect::<Vec<_>>()
++                .join(" "),
++        }),
++        ThreadItem::AgentMessage { text, .. } => Some(TranscriptPreviewLine {
++            speaker: TranscriptPreviewSpeaker::Assistant,
++            text: parse_assistant_markdown(text).visible_markdown,
++        }),
++        _ => None,
++    }
+ }
+ 
+ impl SearchState {
+@@ -3254,6 +3280,115 @@ mod tests {
+         }
+     }
+ 
++    fn compacted_preview_thread() -> Thread {
++        let thread_id = ThreadId::new();
++        Thread {
++            id: thread_id.to_string(),
++            session_id: thread_id.to_string(),
++            forked_from_id: None,
++            preview: String::from("preview"),
++            ephemeral: false,
++            model_provider: String::from("openai"),
++            created_at: 1,
++            updated_at: 2,
++            status: codex_app_server_protocol::ThreadStatus::Idle,
++            path: None,
++            cwd: test_path_buf("/tmp").abs(),
++            cli_version: String::from("0.0.0"),
++            source: codex_app_server_protocol::SessionSource::Cli,
++            thread_source: None,
++            agent_nickname: None,
++            agent_role: None,
++            git_info: None,
++            name: None,
++            turns: vec![
++                codex_app_server_protocol::Turn {
++                    id: String::from("old"),
++                    items_view: codex_app_server_protocol::TurnItemsView::Full,
++                    items: vec![ThreadItem::UserMessage {
++                        id: String::from("old-user"),
++                        client_id: None,
++                        content: vec![codex_app_server_protocol::UserInput::Text {
++                            text: String::from("old prefix user"),
++                            text_elements: Vec::new(),
++                        }],
++                    }],
++                    status: codex_app_server_protocol::TurnStatus::Completed,
++                    error: None,
++                    started_at: None,
++                    completed_at: None,
++                    duration_ms: None,
++                },
++                codex_app_server_protocol::Turn {
++                    id: String::from("final-before-compact"),
++                    items_view: codex_app_server_protocol::TurnItemsView::Full,
++                    items: vec![
++                        ThreadItem::UserMessage {
++                            id: String::from("final-user"),
++                            client_id: None,
++                            content: vec![codex_app_server_protocol::UserInput::Text {
++                                text: String::from("final pre-compact user"),
++                                text_elements: Vec::new(),
++                            }],
++                        },
++                        ThreadItem::CommandExecution {
++                            id: String::from("cmd"),
++                            command: String::from("echo heavy"),
++                            cwd: test_path_buf("/tmp").abs(),
++                            process_id: None,
++                            source: codex_app_server_protocol::CommandExecutionSource::Agent,
++                            status: codex_app_server_protocol::CommandExecutionStatus::Completed,
++                            command_actions: Vec::new(),
++                            aggregated_output: Some(String::from("heavy legacy tool output")),
++                            exit_code: Some(0),
++                            duration_ms: Some(1),
++                        },
++                        ThreadItem::AgentMessage {
++                            id: String::from("final-answer"),
++                            text: String::from("final answer before compact"),
++                            phase: Some(codex_protocol::models::MessagePhase::FinalAnswer),
++                            memory_citation: None,
++                        },
++                    ],
++                    status: codex_app_server_protocol::TurnStatus::Completed,
++                    error: None,
++                    started_at: None,
++                    completed_at: None,
++                    duration_ms: None,
++                },
++                codex_app_server_protocol::Turn {
++                    id: String::from("compact"),
++                    items_view: codex_app_server_protocol::TurnItemsView::Full,
++                    items: vec![ThreadItem::ContextCompaction {
++                        id: String::from("compact"),
++                    }],
++                    status: codex_app_server_protocol::TurnStatus::Completed,
++                    error: None,
++                    started_at: None,
++                    completed_at: None,
++                    duration_ms: None,
++                },
++                codex_app_server_protocol::Turn {
++                    id: String::from("suffix"),
++                    items_view: codex_app_server_protocol::TurnItemsView::Full,
++                    items: vec![ThreadItem::UserMessage {
++                        id: String::from("suffix-user"),
++                        client_id: None,
++                        content: vec![codex_app_server_protocol::UserInput::Text {
++                            text: String::from("post compact user"),
++                            text_elements: Vec::new(),
++                        }],
++                    }],
++                    status: codex_app_server_protocol::TurnStatus::Completed,
++                    error: None,
++                    started_at: None,
++                    completed_at: None,
++                    duration_ms: None,
++                },
++            ],
++        }
++    }
++
+     fn footer_lines_text(state: &PickerState, width: u16) -> String {
+         footer_hint_lines(state, width)
+             .into_iter()
+@@ -5806,12 +5941,16 @@ session_picker_view = "dense"
+             }],
+         };
+ 
+-        let rendered = thread_to_transcript_cells(&thread, RawReasoningVisibility::Visible)
+-            .into_iter()
+-            .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
+-            .map(|line| line.to_string())
+-            .collect::<Vec<_>>()
+-            .join("\n");
++        let rendered = thread_to_transcript_cells(
++            &thread,
++            RawReasoningVisibility::Visible,
++            CompactReplayMode::CompactAware,
++        )
++        .into_iter()
++        .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
++        .map(|line| line.to_string())
++        .collect::<Vec<_>>()
++        .join("\n");
+ 
+         assert!(rendered.contains("hello from user"));
+         assert!(rendered.contains("hello from assistant"));
+@@ -5819,6 +5958,70 @@ session_picker_view = "dense"
+         assert!(rendered.contains("Do the thing"));
+     }
+ 
++    #[test]
++    fn thread_to_transcript_cells_folds_pre_compaction_history() {
++        use transcript::thread_to_transcript_cells;
++
++        let thread = compacted_preview_thread();
++
++        let rendered = thread_to_transcript_cells(
++            &thread,
++            RawReasoningVisibility::Visible,
++            CompactReplayMode::CompactAware,
++        )
++        .into_iter()
++        .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
++        .map(|line| line.to_string())
++        .collect::<Vec<_>>()
++        .join("\n");
++
++        assert!(rendered.contains("Earlier pre-compaction transcript folded"));
++        assert!(rendered.contains("Folded heavy pre-compaction turn content"));
++        assert!(rendered.contains("final pre-compact user"));
++        assert!(rendered.contains("final answer before compact"));
++        assert!(rendered.contains("post compact user"));
++        assert!(!rendered.contains("old prefix user"));
++        assert!(!rendered.contains("heavy legacy tool output"));
++    }
++
++    #[test]
++    fn transcript_preview_lines_fold_pre_compaction_history() {
++        let thread = compacted_preview_thread();
++
++        let lines = thread_to_transcript_preview_lines(&thread, CompactReplayMode::CompactAware);
++        let texts = lines
++            .iter()
++            .map(|line| line.text.as_str())
++            .collect::<Vec<_>>();
++
++        assert_eq!(
++            texts,
++            vec![
++                "final pre-compact user",
++                "final answer before compact",
++                "post compact user"
++            ]
++        );
++        assert!(!texts.contains(&"old prefix user"));
++        assert!(!texts.contains(&"heavy legacy tool output"));
++    }
++
++    #[test]
++    fn transcript_preview_lines_full_history_mode_keeps_old_prefix() {
++        let thread = compacted_preview_thread();
++
++        let lines = thread_to_transcript_preview_lines(&thread, CompactReplayMode::FullHistory);
++        let texts = lines
++            .iter()
++            .map(|line| line.text.as_str())
++            .collect::<Vec<_>>();
++
++        assert!(texts.contains(&"old prefix user"));
++        assert!(texts.contains(&"final pre-compact user"));
++        assert!(texts.contains(&"final answer before compact"));
++        assert!(texts.contains(&"post compact user"));
++    }
++
+     #[test]
+     fn thread_to_transcript_cells_hides_raw_reasoning_when_not_enabled() {
+         use transcript::thread_to_transcript_cells;
+@@ -5859,18 +6062,26 @@ session_picker_view = "dense"
+             }],
+         };
+ 
+-        let hidden = thread_to_transcript_cells(&thread, RawReasoningVisibility::Hidden)
+-            .into_iter()
+-            .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
+-            .map(|line| line.to_string())
+-            .collect::<Vec<_>>()
+-            .join("\n");
+-        let visible = thread_to_transcript_cells(&thread, RawReasoningVisibility::Visible)
+-            .into_iter()
+-            .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
+-            .map(|line| line.to_string())
+-            .collect::<Vec<_>>()
+-            .join("\n");
++        let hidden = thread_to_transcript_cells(
++            &thread,
++            RawReasoningVisibility::Hidden,
++            CompactReplayMode::CompactAware,
++        )
++        .into_iter()
++        .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
++        .map(|line| line.to_string())
++        .collect::<Vec<_>>()
++        .join("\n");
++        let visible = thread_to_transcript_cells(
++            &thread,
++            RawReasoningVisibility::Visible,
++            CompactReplayMode::CompactAware,
++        )
++        .into_iter()
++        .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
++        .map(|line| line.to_string())
++        .collect::<Vec<_>>()
++        .join("\n");
+ 
+         assert!(!hidden.contains("private raw chain of thought"));
+         assert!(visible.contains("private raw chain of thought"));
+@@ -5916,12 +6127,16 @@ session_picker_view = "dense"
+             }],
+         };
+ 
+-        let rendered = thread_to_transcript_cells(&thread, RawReasoningVisibility::Visible)
+-            .into_iter()
+-            .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
+-            .map(|line| line.to_string())
+-            .collect::<Vec<_>>()
+-            .join("\n");
++        let rendered = thread_to_transcript_cells(
++            &thread,
++            RawReasoningVisibility::Visible,
++            CompactReplayMode::CompactAware,
++        )
++        .into_iter()
++        .flat_map(|cell| cell.transcript_lines(/*width*/ 80))
++        .map(|line| line.to_string())
++        .collect::<Vec<_>>()
++        .join("\n");
+ 
+         assert!(rendered.contains("raw reasoning content"));
+         assert!(!rendered.contains("public summary"));
+diff --git a/codex-rs/tui/src/resume_picker/transcript.rs b/codex-rs/tui/src/resume_picker/transcript.rs
+index abf13bd..ea7fd67 100644
+--- a/codex-rs/tui/src/resume_picker/transcript.rs
++++ b/codex-rs/tui/src/resume_picker/transcript.rs
+@@ -1,6 +1,11 @@
+ use std::sync::Arc;
+ 
+ use crate::app_server_session::AppServerSession;
++use crate::compact_aware_replay::CompactReplayItem;
++use crate::compact_aware_replay::CompactReplayMode;
++use crate::compact_aware_replay::CompactReplayPlan;
++use crate::compact_aware_replay::FoldedItems;
++use crate::compact_aware_replay::FoldedPrefix;
+ use crate::git_action_directives::parse_assistant_markdown;
+ use crate::history_cell::AgentMarkdownCell;
+ use crate::history_cell::HistoryCell;
+@@ -26,6 +31,7 @@ pub(crate) async fn load_session_transcript(
+     app_server: &mut AppServerSession,
+     thread_id: ThreadId,
+     raw_reasoning_visibility: RawReasoningVisibility,
++    compact_replay_mode: CompactReplayMode,
+ ) -> std::io::Result<TranscriptCells> {
+     let thread = app_server
+         .thread_read(thread_id, /*include_turns*/ true)
+@@ -34,78 +40,28 @@ pub(crate) async fn load_session_transcript(
+     Ok(thread_to_transcript_cells(
+         &thread,
+         raw_reasoning_visibility,
++        compact_replay_mode,
+     ))
+ }
+ 
+ pub(crate) fn thread_to_transcript_cells(
+     thread: &Thread,
+     raw_reasoning_visibility: RawReasoningVisibility,
++    compact_replay_mode: CompactReplayMode,
+ ) -> TranscriptCells {
+     let cwd = thread.cwd.as_path();
+     let mut cells: TranscriptCells = Vec::new();
+-    for item in thread.turns.iter().flat_map(|turn| turn.items.iter()) {
++    let plan = CompactReplayPlan::from_turns(&thread.turns, compact_replay_mode);
++    if let Some(prefix) = plan.folded_prefix {
++        cells.push(folded_prefix_transcript_cell(prefix));
++    }
++    for item in plan.turns.iter().flat_map(|turn| turn.items.iter()) {
+         match item {
+-            ThreadItem::UserMessage {
+-                id,
+-                client_id,
+-                content,
+-            } => {
+-                let item = UserMessageItem {
+-                    id: id.clone(),
+-                    client_id: client_id.clone(),
+-                    content: content
+-                        .iter()
+-                        .cloned()
+-                        .map(codex_app_server_protocol::UserInput::into_core)
+-                        .collect(),
+-                };
+-                cells.push(Arc::new(UserHistoryCell {
+-                    message: item.message(),
+-                    text_elements: item.text_elements(),
+-                    local_image_paths: item.local_image_paths(),
+-                    remote_image_urls: item.image_urls(),
+-                }));
+-            }
+-            ThreadItem::AgentMessage { text, .. } => {
+-                let parsed = parse_assistant_markdown(text);
+-                if !parsed.visible_markdown.trim().is_empty() {
+-                    cells.push(Arc::new(AgentMarkdownCell::new(
+-                        parsed.visible_markdown,
+-                        cwd,
+-                    )));
+-                }
+-            }
+-            ThreadItem::Plan { text, .. } => {
+-                if !text.trim().is_empty() {
+-                    cells.push(Arc::new(crate::history_cell::new_proposed_plan(
+-                        text.clone(),
+-                        cwd,
+-                    )));
+-                }
++            CompactReplayItem::Canonical(item) => {
++                push_thread_item_cells(&mut cells, item, cwd, raw_reasoning_visibility);
+             }
+-            ThreadItem::Reasoning {
+-                summary, content, ..
+-            } => {
+-                let text = if matches!(raw_reasoning_visibility, RawReasoningVisibility::Visible)
+-                    && !content.is_empty()
+-                {
+-                    content.join("\n\n")
+-                } else {
+-                    summary.join("\n\n")
+-                };
+-                if !text.trim().is_empty() {
+-                    cells.push(Arc::new(ReasoningSummaryCell::new(
+-                        "Reasoning".to_string(),
+-                        text,
+-                        cwd,
+-                        /*transcript_only*/ false,
+-                    )));
+-                }
+-            }
+-            other => {
+-                if let Some(cell) = fallback_transcript_cell(other) {
+-                    cells.push(Arc::new(cell));
+-                }
++            CompactReplayItem::FoldedItems(items) => {
++                cells.push(folded_items_transcript_cell(items));
+             }
+         }
+     }
+@@ -117,6 +73,90 @@ pub(crate) fn thread_to_transcript_cells(
+     cells
+ }
+ 
++fn push_thread_item_cells(
++    cells: &mut TranscriptCells,
++    item: &ThreadItem,
++    cwd: &std::path::Path,
++    raw_reasoning_visibility: RawReasoningVisibility,
++) {
++    match item {
++        ThreadItem::UserMessage {
++            id,
++            client_id,
++            content,
++        } => {
++            let item = UserMessageItem {
++                id: id.clone(),
++                client_id: client_id.clone(),
++                content: content
++                    .iter()
++                    .cloned()
++                    .map(codex_app_server_protocol::UserInput::into_core)
++                    .collect(),
++            };
++            cells.push(Arc::new(UserHistoryCell {
++                message: item.message(),
++                text_elements: item.text_elements(),
++                local_image_paths: item.local_image_paths(),
++                remote_image_urls: item.image_urls(),
++            }));
++        }
++        ThreadItem::AgentMessage { text, .. } => {
++            let parsed = parse_assistant_markdown(text);
++            if !parsed.visible_markdown.trim().is_empty() {
++                cells.push(Arc::new(AgentMarkdownCell::new(
++                    parsed.visible_markdown,
++                    cwd,
++                )));
++            }
++        }
++        ThreadItem::Plan { text, .. } => {
++            if !text.trim().is_empty() {
++                cells.push(Arc::new(crate::history_cell::new_proposed_plan(
++                    text.clone(),
++                    cwd,
++                )));
++            }
++        }
++        ThreadItem::Reasoning {
++            summary, content, ..
++        } => {
++            let text = if matches!(raw_reasoning_visibility, RawReasoningVisibility::Visible)
++                && !content.is_empty()
++            {
++                content.join("\n\n")
++            } else {
++                summary.join("\n\n")
++            };
++            if !text.trim().is_empty() {
++                cells.push(Arc::new(ReasoningSummaryCell::new(
++                    "Reasoning".to_string(),
++                    text,
++                    cwd,
++                    /*transcript_only*/ false,
++                )));
++            }
++        }
++        other => {
++            if let Some(cell) = fallback_transcript_cell(other) {
++                cells.push(Arc::new(cell));
++            }
++        }
++    }
++}
++
++fn folded_prefix_transcript_cell(prefix: FoldedPrefix) -> Arc<dyn HistoryCell> {
++    Arc::new(PlainHistoryCell::new(vec![
++        prefix.display_message().italic().dim().into(),
++    ]))
++}
++
++fn folded_items_transcript_cell(items: &FoldedItems) -> Arc<dyn HistoryCell> {
++    Arc::new(PlainHistoryCell::new(vec![
++        items.display_message().italic().dim().into(),
++    ]))
++}
++
+ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
+     let lines = match item {
+         ThreadItem::HookPrompt { fragments, .. } => fragments

@@ -24,3 +24,10 @@ Drafts:
 
 - `upstream/issue-draft.md`
 - `upstream/pr-plan.md`
+
+Review-ready materials:
+
+- `upstream/issue-ready.md` — final issue draft for user review.
+- `upstream/pr-ready.md` — final PR body draft for user review.
+- `upstream/pr-series/README.md` — local branch, split patches, and submit commands gated on final confirmation.
+- `upstream/pr-series/*.patch` — smaller upstream-friendly patch series.

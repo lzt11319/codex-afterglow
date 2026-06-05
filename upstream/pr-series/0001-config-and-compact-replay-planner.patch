@@ -1,0 +1,892 @@
+diff --git a/codex-rs/config/src/types.rs b/codex-rs/config/src/types.rs
+index 30d2970..48906b4 100644
+--- a/codex-rs/config/src/types.rs
++++ b/codex-rs/config/src/types.rs
+@@ -672,6 +672,12 @@ pub struct Tui {
+     #[serde(default)]
+     pub raw_output_mode: bool,
+ 
++    /// Fold pre-compaction TUI replay by default after the latest context compaction.
++    /// Set to `false` to restore full-history rendering.
++    /// Defaults to `true`.
++    #[serde(default = "default_true")]
++    pub compact_aware_rendering: bool,
++
+     /// Controls whether the TUI uses the terminal's alternate screen buffer.
+     ///
+     /// - `auto` (default): Use alternate screen.
+diff --git a/codex-rs/core/config.schema.json b/codex-rs/core/config.schema.json
+index 77d2c97..a35e4b8 100644
+--- a/codex-rs/core/config.schema.json
++++ b/codex-rs/core/config.schema.json
+@@ -2762,6 +2762,11 @@
+           "description": "Enable animations (welcome screen, shimmer effects, spinners). Defaults to `true`.",
+           "type": "boolean"
+         },
++        "compact_aware_rendering": {
++          "default": true,
++          "description": "Fold pre-compaction TUI replay by default after the latest context compaction. Set to `false` to restore full-history rendering. Defaults to `true`.",
++          "type": "boolean"
++        },
+         "keymap": {
+           "allOf": [
+             {
+diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
+index fa024c0..d9f9548 100644
+--- a/codex-rs/core/src/config/config_tests.rs
++++ b/codex-rs/core/src/config/config_tests.rs
+@@ -635,6 +635,7 @@ fn config_toml_deserializes_model_availability_nux() {
+             show_tooltips: true,
+             vim_mode_default: false,
+             raw_output_mode: false,
++            compact_aware_rendering: true,
+             alternate_screen: AltScreenMode::default(),
+             status_line: None,
+             status_line_use_colors: true,
+@@ -777,6 +778,36 @@ fn test_tui_raw_output_mode_true() {
+     );
+ }
+ 
++#[test]
++fn test_tui_compact_aware_rendering_defaults_to_true() {
++    let toml = r#"
++        [tui]
++    "#;
++    let parsed: ConfigToml = toml::from_str(toml).expect("deserialize empty [tui] table");
++    assert!(
++        parsed
++            .tui
++            .expect("config should include tui section")
++            .compact_aware_rendering
++    );
++}
++
++#[test]
++fn test_tui_compact_aware_rendering_false() {
++    let toml = r#"
++        [tui]
++        compact_aware_rendering = false
++    "#;
++    let parsed =
++        toml::from_str::<ConfigToml>(toml).expect("deserialize compact_aware_rendering=false");
++    assert!(
++        !parsed
++            .tui
++            .expect("config should include tui section")
++            .compact_aware_rendering
++    );
++}
++
+ #[tokio::test]
+ async fn runtime_config_uses_tui_raw_output_mode() {
+     let toml = r#"
+@@ -795,6 +826,38 @@ async fn runtime_config_uses_tui_raw_output_mode() {
+     assert!(cfg.tui_raw_output_mode);
+ }
+ 
++#[tokio::test]
++async fn runtime_config_defaults_tui_compact_aware_rendering_to_enabled() {
++    let cfg = Config::load_from_base_config_with_overrides(
++        ConfigToml::default(),
++        ConfigOverrides::default(),
++        tempdir().expect("tempdir").abs(),
++    )
++    .await
++    .expect("load config");
++
++    assert!(cfg.tui_compact_aware_rendering);
++}
++
++#[tokio::test]
++async fn runtime_config_can_disable_tui_compact_aware_rendering() {
++    let toml = r#"
++        [tui]
++        compact_aware_rendering = false
++    "#;
++    let cfg_toml =
++        toml::from_str::<ConfigToml>(toml).expect("deserialize compact_aware_rendering=false");
++    let cfg = Config::load_from_base_config_with_overrides(
++        cfg_toml,
++        ConfigOverrides::default(),
++        tempdir().expect("tempdir").abs(),
++    )
++    .await
++    .expect("load config");
++
++    assert!(!cfg.tui_compact_aware_rendering);
++}
++
+ #[test]
+ fn config_toml_deserializes_permission_profiles() {
+     let toml = r#"
+@@ -3283,6 +3346,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
+             show_tooltips: true,
+             vim_mode_default: false,
+             raw_output_mode: false,
++            compact_aware_rendering: true,
+             alternate_screen: AltScreenMode::Auto,
+             status_line: None,
+             status_line_use_colors: true,
+diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
+index 9624f42..f08404f 100644
+--- a/codex-rs/core/src/config/mod.rs
++++ b/codex-rs/core/src/config/mod.rs
+@@ -681,6 +681,9 @@ pub struct Config {
+     /// Start the TUI in raw scrollback mode for copy-friendly transcript output.
+     pub tui_raw_output_mode: bool,
+ 
++    /// Fold pre-compaction TUI replay after the latest context compaction.
++    pub tui_compact_aware_rendering: bool,
++
+     /// Start the TUI in the specified collaboration mode (plan/default).
+ 
+     /// Controls whether the TUI uses the terminal's alternate screen buffer.
+@@ -3527,6 +3530,11 @@ impl Config {
+                 .as_ref()
+                 .map(|t| t.raw_output_mode)
+                 .unwrap_or(false),
++            tui_compact_aware_rendering: cfg
++                .tui
++                .as_ref()
++                .map(|t| t.compact_aware_rendering)
++                .unwrap_or(true),
+             tui_alternate_screen: cfg
+                 .tui
+                 .as_ref()
+diff --git a/codex-rs/tui/src/compact_aware_replay.rs b/codex-rs/tui/src/compact_aware_replay.rs
+new file mode 100644
+index 0000000..4fd7796
+--- /dev/null
++++ b/codex-rs/tui/src/compact_aware_replay.rs
+@@ -0,0 +1,719 @@
++use codex_app_server_protocol::ThreadItem;
++use codex_app_server_protocol::Turn;
++use codex_app_server_protocol::TurnError;
++use codex_app_server_protocol::TurnItemsView;
++use codex_app_server_protocol::TurnStatus;
++use codex_protocol::models::MessagePhase;
++use std::collections::BTreeSet;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum CompactReplayMode {
++    CompactAware,
++    FullHistory,
++}
++
++impl CompactReplayMode {
++    pub(crate) fn from_config(config: &crate::legacy_core::config::Config) -> Self {
++        if config.tui_compact_aware_rendering {
++            Self::CompactAware
++        } else {
++            Self::FullHistory
++        }
++    }
++}
++
++#[derive(Debug, Clone, PartialEq)]
++pub(crate) struct CompactReplayPlan {
++    pub(crate) folded_prefix: Option<FoldedPrefix>,
++    pub(crate) turns: Vec<CompactReplayTurn>,
++}
++
++impl CompactReplayPlan {
++    pub(crate) fn from_turns(turns: &[Turn], mode: CompactReplayMode) -> Self {
++        if matches!(mode, CompactReplayMode::FullHistory) {
++            return Self::full_history(turns);
++        }
++
++        let Some(compaction) = latest_compaction_position(turns) else {
++            return Self::full_history(turns);
++        };
++
++        let final_pre_compaction_turn = final_pre_compaction_turn(turns, compaction);
++        let folded_prefix = folded_prefix(turns, compaction, final_pre_compaction_turn);
++        let mut replay_turns = Vec::new();
++
++        if let Some(turn_index) = final_pre_compaction_turn {
++            let turn = &turns[turn_index];
++            let item_limit = if turn_index == compaction.turn_index {
++                compaction.item_index
++            } else {
++                turn.items.len()
++            };
++            let items = lightweight_final_turn_items(&turn.items[..item_limit]);
++            if !items.is_empty() {
++                replay_turns.push(CompactReplayTurn::from_turn(
++                    turn,
++                    CompactReplayTurnSource::FinalPreCompaction,
++                    items,
++                ));
++            }
++        }
++
++        replay_turns.extend(post_compaction_turns(turns, compaction));
++
++        Self {
++            folded_prefix,
++            turns: replay_turns,
++        }
++    }
++
++    fn full_history(turns: &[Turn]) -> Self {
++        Self {
++            folded_prefix: None,
++            turns: turns
++                .iter()
++                .map(|turn| {
++                    CompactReplayTurn::from_turn(
++                        turn,
++                        CompactReplayTurnSource::FullHistory,
++                        turn.items
++                            .iter()
++                            .cloned()
++                            .map(CompactReplayItem::Canonical)
++                            .collect(),
++                    )
++                })
++                .collect(),
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct CompactionPosition {
++    turn_index: usize,
++    item_index: usize,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct FoldedPrefix {
++    pub(crate) omitted_turn_count: usize,
++    pub(crate) omitted_item_count: usize,
++}
++
++impl FoldedPrefix {
++    pub(crate) fn display_message(&self) -> String {
++        format!(
++            "Earlier pre-compaction transcript folded ({} turns, {} items). Full history remains persisted; set [tui].compact_aware_rendering = false to render it.",
++            self.omitted_turn_count, self.omitted_item_count
++        )
++    }
++}
++
++#[derive(Debug, Clone, PartialEq)]
++pub(crate) struct CompactReplayTurn {
++    pub(crate) id: String,
++    pub(crate) items: Vec<CompactReplayItem>,
++    pub(crate) items_view: TurnItemsView,
++    pub(crate) status: TurnStatus,
++    pub(crate) error: Option<TurnError>,
++    pub(crate) started_at: Option<i64>,
++    pub(crate) completed_at: Option<i64>,
++    pub(crate) duration_ms: Option<i64>,
++    pub(crate) source: CompactReplayTurnSource,
++}
++
++impl CompactReplayTurn {
++    fn from_turn(
++        turn: &Turn,
++        source: CompactReplayTurnSource,
++        items: Vec<CompactReplayItem>,
++    ) -> Self {
++        Self {
++            id: turn.id.clone(),
++            items,
++            items_view: turn.items_view,
++            status: turn.status.clone(),
++            error: turn.error.clone(),
++            started_at: turn.started_at,
++            completed_at: turn.completed_at,
++            duration_ms: turn.duration_ms,
++            source,
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum CompactReplayTurnSource {
++    FullHistory,
++    FinalPreCompaction,
++    PostCompaction,
++}
++
++#[derive(Debug, Clone, PartialEq)]
++pub(crate) enum CompactReplayItem {
++    Canonical(ThreadItem),
++    FoldedItems(FoldedItems),
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct FoldedItems {
++    pub(crate) item_count: usize,
++    pub(crate) kinds: Vec<FoldedItemKind>,
++}
++
++impl FoldedItems {
++    pub(crate) fn display_message(&self) -> String {
++        let kinds = self
++            .kinds
++            .iter()
++            .map(|kind| kind.label())
++            .collect::<Vec<_>>()
++            .join(", ");
++        if kinds.is_empty() {
++            format!(
++                "Folded heavy pre-compaction turn content ({} items).",
++                self.item_count
++            )
++        } else {
++            format!(
++                "Folded heavy pre-compaction turn content ({} items: {}).",
++                self.item_count, kinds
++            )
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++pub(crate) enum FoldedItemKind {
++    AgentCommentary,
++    CollabAgentToolCall,
++    CommandExecution,
++    ContextCompaction,
++    DynamicToolCall,
++    FileChange,
++    HookPrompt,
++    ImageGeneration,
++    ImageView,
++    McpToolCall,
++    Plan,
++    Reasoning,
++    ReviewMode,
++    WebSearch,
++}
++
++impl FoldedItemKind {
++    fn label(self) -> &'static str {
++        match self {
++            Self::AgentCommentary => "assistant commentary",
++            Self::CollabAgentToolCall => "agent tool",
++            Self::CommandExecution => "command execution",
++            Self::ContextCompaction => "context compaction",
++            Self::DynamicToolCall => "dynamic tool",
++            Self::FileChange => "file change",
++            Self::HookPrompt => "hook prompt",
++            Self::ImageGeneration => "image generation",
++            Self::ImageView => "image",
++            Self::McpToolCall => "mcp tool",
++            Self::Plan => "plan",
++            Self::Reasoning => "reasoning",
++            Self::ReviewMode => "review mode",
++            Self::WebSearch => "web search",
++        }
++    }
++}
++
++fn latest_compaction_position(turns: &[Turn]) -> Option<CompactionPosition> {
++    turns
++        .iter()
++        .enumerate()
++        .rev()
++        .find_map(|(turn_index, turn)| {
++            turn.items
++                .iter()
++                .enumerate()
++                .rev()
++                .find(|(_, item)| matches!(item, ThreadItem::ContextCompaction { .. }))
++                .map(|(item_index, _)| CompactionPosition {
++                    turn_index,
++                    item_index,
++                })
++        })
++}
++
++fn final_pre_compaction_turn(turns: &[Turn], compaction: CompactionPosition) -> Option<usize> {
++    (0..=compaction.turn_index).rev().find(|turn_index| {
++        let item_limit = if *turn_index == compaction.turn_index {
++            compaction.item_index
++        } else {
++            turns[*turn_index].items.len()
++        };
++        turns[*turn_index].items[..item_limit]
++            .iter()
++            .any(|item| !matches!(item, ThreadItem::ContextCompaction { .. }))
++    })
++}
++
++fn folded_prefix(
++    turns: &[Turn],
++    compaction: CompactionPosition,
++    final_pre_compaction_turn: Option<usize>,
++) -> Option<FoldedPrefix> {
++    let prefix_turn_limit = final_pre_compaction_turn.unwrap_or(compaction.turn_index);
++    let omitted_item_count = turns[..prefix_turn_limit]
++        .iter()
++        .map(|turn| turn.items.len())
++        .sum();
++
++    (prefix_turn_limit > 0 || omitted_item_count > 0).then_some(FoldedPrefix {
++        omitted_turn_count: prefix_turn_limit,
++        omitted_item_count,
++    })
++}
++
++fn lightweight_final_turn_items(items: &[ThreadItem]) -> Vec<CompactReplayItem> {
++    let mut replay_items = Vec::new();
++    let mut folded = FoldedItemsAccumulator::default();
++
++    for item in items {
++        if should_retain_final_turn_item(item) {
++            if let Some(items) = folded.take() {
++                replay_items.push(CompactReplayItem::FoldedItems(items));
++            }
++            replay_items.push(CompactReplayItem::Canonical(item.clone()));
++        } else {
++            folded.push(item);
++        }
++    }
++
++    if let Some(items) = folded.take() {
++        replay_items.push(CompactReplayItem::FoldedItems(items));
++    }
++
++    replay_items
++}
++
++fn should_retain_final_turn_item(item: &ThreadItem) -> bool {
++    match item {
++        ThreadItem::UserMessage { .. } => true,
++        ThreadItem::AgentMessage { phase, .. } => {
++            matches!(phase, Some(MessagePhase::FinalAnswer) | None)
++        }
++        _ => false,
++    }
++}
++
++fn post_compaction_turns(
++    turns: &[Turn],
++    compaction: CompactionPosition,
++) -> impl Iterator<Item = CompactReplayTurn> + '_ {
++    turns
++        .iter()
++        .enumerate()
++        .skip(compaction.turn_index)
++        .filter_map(move |(turn_index, turn)| {
++            let item_start = if turn_index == compaction.turn_index {
++                compaction.item_index + 1
++            } else {
++                0
++            };
++            let items: Vec<_> = turn.items[item_start..]
++                .iter()
++                .cloned()
++                .map(CompactReplayItem::Canonical)
++                .collect();
++            (!items.is_empty()).then(|| {
++                CompactReplayTurn::from_turn(turn, CompactReplayTurnSource::PostCompaction, items)
++            })
++        })
++}
++
++#[derive(Default)]
++struct FoldedItemsAccumulator {
++    item_count: usize,
++    kinds: BTreeSet<FoldedItemKind>,
++}
++
++impl FoldedItemsAccumulator {
++    fn push(&mut self, item: &ThreadItem) {
++        self.item_count += 1;
++        self.kinds.insert(FoldedItemKind::from(item));
++    }
++
++    fn take(&mut self) -> Option<FoldedItems> {
++        if self.item_count == 0 {
++            return None;
++        }
++        Some(FoldedItems {
++            item_count: std::mem::take(&mut self.item_count),
++            kinds: std::mem::take(&mut self.kinds).into_iter().collect(),
++        })
++    }
++}
++
++impl From<&ThreadItem> for FoldedItemKind {
++    fn from(item: &ThreadItem) -> Self {
++        match item {
++            ThreadItem::UserMessage { .. } => unreachable!("user messages are retained"),
++            ThreadItem::AgentMessage { .. } => Self::AgentCommentary,
++            ThreadItem::Plan { .. } => Self::Plan,
++            ThreadItem::Reasoning { .. } => Self::Reasoning,
++            ThreadItem::CommandExecution { .. } => Self::CommandExecution,
++            ThreadItem::FileChange { .. } => Self::FileChange,
++            ThreadItem::McpToolCall { .. } => Self::McpToolCall,
++            ThreadItem::WebSearch { .. } => Self::WebSearch,
++            ThreadItem::ImageView { .. } => Self::ImageView,
++            ThreadItem::ImageGeneration { .. } => Self::ImageGeneration,
++            ThreadItem::EnteredReviewMode { .. } | ThreadItem::ExitedReviewMode { .. } => {
++                Self::ReviewMode
++            }
++            ThreadItem::ContextCompaction { .. } => Self::ContextCompaction,
++            ThreadItem::HookPrompt { .. } => Self::HookPrompt,
++            ThreadItem::CollabAgentToolCall { .. } => Self::CollabAgentToolCall,
++            ThreadItem::DynamicToolCall { .. } => Self::DynamicToolCall,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use codex_app_server_protocol::CommandExecutionStatus;
++    use codex_app_server_protocol::ThreadItem;
++    use codex_app_server_protocol::TurnItemsView;
++    use codex_app_server_protocol::TurnStatus;
++    use codex_app_server_protocol::UserInput;
++    use codex_utils_absolute_path::AbsolutePathBuf;
++    use pretty_assertions::assert_eq;
++    use std::path::PathBuf;
++
++    fn turn(id: &str, items: Vec<ThreadItem>) -> Turn {
++        Turn {
++            id: id.to_string(),
++            items,
++            items_view: TurnItemsView::Full,
++            status: TurnStatus::Completed,
++            error: None,
++            started_at: None,
++            completed_at: None,
++            duration_ms: None,
++        }
++    }
++
++    fn user(id: &str, text: &str) -> ThreadItem {
++        ThreadItem::UserMessage {
++            id: id.to_string(),
++            client_id: None,
++            content: vec![UserInput::Text {
++                text: text.to_string(),
++                text_elements: Vec::new(),
++            }],
++        }
++    }
++
++    fn agent(id: &str, text: &str, phase: Option<MessagePhase>) -> ThreadItem {
++        ThreadItem::AgentMessage {
++            id: id.to_string(),
++            text: text.to_string(),
++            phase,
++            memory_citation: None,
++        }
++    }
++
++    fn reasoning(id: &str) -> ThreadItem {
++        ThreadItem::Reasoning {
++            id: id.to_string(),
++            summary: vec!["summary".to_string()],
++            content: vec!["raw".to_string()],
++        }
++    }
++
++    fn abs_tmp_path() -> AbsolutePathBuf {
++        #[cfg(windows)]
++        let path = PathBuf::from(r"C:\tmp");
++        #[cfg(not(windows))]
++        let path = PathBuf::from("/tmp");
++        AbsolutePathBuf::try_from(path).expect("absolute path")
++    }
++
++    fn command(id: &str) -> ThreadItem {
++        ThreadItem::CommandExecution {
++            id: id.to_string(),
++            command: "echo hi".to_string(),
++            cwd: abs_tmp_path(),
++            process_id: None,
++            source: codex_app_server_protocol::CommandExecutionSource::Agent,
++            status: CommandExecutionStatus::Completed,
++            command_actions: Vec::new(),
++            aggregated_output: Some("hi".to_string()),
++            exit_code: Some(0),
++            duration_ms: Some(1),
++        }
++    }
++
++    fn compaction(id: &str) -> ThreadItem {
++        ThreadItem::ContextCompaction { id: id.to_string() }
++    }
++
++    fn canonical_ids(turn: &CompactReplayTurn) -> Vec<String> {
++        turn.items
++            .iter()
++            .filter_map(|item| match item {
++                CompactReplayItem::Canonical(item) => Some(item.id().to_string()),
++                CompactReplayItem::FoldedItems(_) => None,
++            })
++            .collect()
++    }
++
++    fn folded_items(turn: &CompactReplayTurn) -> Option<&FoldedItems> {
++        turn.items.iter().find_map(|item| match item {
++            CompactReplayItem::Canonical(_) => None,
++            CompactReplayItem::FoldedItems(items) => Some(items),
++        })
++    }
++
++    #[test]
++    fn never_compacted_threads_render_full_history() {
++        let turns = vec![
++            turn("turn-1", vec![user("u1", "hello")]),
++            turn(
++                "turn-2",
++                vec![agent("a1", "answer", Some(MessagePhase::FinalAnswer))],
++            ),
++        ];
++
++        let plan = CompactReplayPlan::from_turns(&turns, CompactReplayMode::CompactAware);
++
++        assert_eq!(plan.folded_prefix, None);
++        assert_eq!(plan.turns.len(), 2);
++        assert_eq!(plan.turns[0].source, CompactReplayTurnSource::FullHistory);
++        assert_eq!(canonical_ids(&plan.turns[0]), vec!["u1"]);
++        assert_eq!(canonical_ids(&plan.turns[1]), vec!["a1"]);
++    }
++
++    #[test]
++    fn full_history_mode_preserves_compaction_item() {
++        let turns = vec![
++            turn("turn-1", vec![user("u1", "hello")]),
++            turn("turn-2", vec![compaction("c1")]),
++        ];
++
++        let plan = CompactReplayPlan::from_turns(&turns, CompactReplayMode::FullHistory);
++
++        assert_eq!(plan.folded_prefix, None);
++        assert_eq!(plan.turns.len(), 2);
++        assert_eq!(canonical_ids(&plan.turns[1]), vec!["c1"]);
++    }
++
++    #[test]
++    fn compacted_threads_keep_lightweight_final_turn_and_suffix() {
++        let turns = vec![
++            turn("old", vec![user("old-user", "old")]),
++            turn(
++                "final",
++                vec![
++                    user("final-user", "before compact"),
++                    command("cmd"),
++                    reasoning("reasoning"),
++                    agent("commentary", "working", Some(MessagePhase::Commentary)),
++                    agent("final-answer", "done", Some(MessagePhase::FinalAnswer)),
++                ],
++            ),
++            turn("compact", vec![compaction("compact-item")]),
++            turn(
++                "suffix",
++                vec![
++                    user("suffix-user", "after"),
++                    agent("suffix-answer", "after answer", None),
++                ],
++            ),
++        ];
++
++        let plan = CompactReplayPlan::from_turns(&turns, CompactReplayMode::CompactAware);
++
++        assert_eq!(
++            plan.folded_prefix,
++            Some(FoldedPrefix {
++                omitted_turn_count: 1,
++                omitted_item_count: 1,
++            })
++        );
++        assert_eq!(plan.turns.len(), 2);
++        assert_eq!(
++            plan.turns[0].source,
++            CompactReplayTurnSource::FinalPreCompaction
++        );
++        assert_eq!(
++            canonical_ids(&plan.turns[0]),
++            vec!["final-user", "final-answer"]
++        );
++        assert_eq!(
++            folded_items(&plan.turns[0]),
++            Some(&FoldedItems {
++                item_count: 3,
++                kinds: vec![
++                    FoldedItemKind::AgentCommentary,
++                    FoldedItemKind::CommandExecution,
++                    FoldedItemKind::Reasoning,
++                ],
++            })
++        );
++        assert_eq!(
++            plan.turns[1].source,
++            CompactReplayTurnSource::PostCompaction
++        );
++        assert_eq!(
++            canonical_ids(&plan.turns[1]),
++            vec!["suffix-user", "suffix-answer"]
++        );
++    }
++
++    #[test]
++    fn synthetic_replay_pressure_is_bounded_after_compaction() {
++        const OLD_TURNS: usize = 1_000;
++        const OLD_ITEMS_PER_TURN: usize = 4;
++
++        let mut turns = Vec::new();
++        for index in 0..OLD_TURNS {
++            turns.push(turn(
++                &format!("old-{index}"),
++                vec![
++                    user(&format!("old-user-{index}"), "old"),
++                    command(&format!("old-command-{index}")),
++                    reasoning(&format!("old-reasoning-{index}")),
++                    agent(
++                        &format!("old-commentary-{index}"),
++                        "working",
++                        Some(MessagePhase::Commentary),
++                    ),
++                ],
++            ));
++        }
++        turns.push(turn(
++            "final",
++            vec![
++                user("final-user", "before compact"),
++                command("final-command"),
++                reasoning("final-reasoning"),
++                agent("final-answer", "done", Some(MessagePhase::FinalAnswer)),
++            ],
++        ));
++        turns.push(turn("compact", vec![compaction("compact")]));
++        turns.push(turn("suffix", vec![user("suffix-user", "after")]));
++
++        let full_history = CompactReplayPlan::from_turns(&turns, CompactReplayMode::FullHistory);
++        let compact_aware = CompactReplayPlan::from_turns(&turns, CompactReplayMode::CompactAware);
++        let replay_unit_count = |plan: &CompactReplayPlan| {
++            usize::from(plan.folded_prefix.is_some())
++                + plan
++                    .turns
++                    .iter()
++                    .map(|turn| turn.items.len())
++                    .sum::<usize>()
++        };
++
++        assert_eq!(
++            replay_unit_count(&full_history),
++            OLD_TURNS * OLD_ITEMS_PER_TURN + 6
++        );
++        assert_eq!(
++            compact_aware.folded_prefix,
++            Some(FoldedPrefix {
++                omitted_turn_count: OLD_TURNS,
++                omitted_item_count: OLD_TURNS * OLD_ITEMS_PER_TURN,
++            })
++        );
++        assert_eq!(replay_unit_count(&compact_aware), 5);
++        assert!(replay_unit_count(&compact_aware) < replay_unit_count(&full_history) / 100);
++    }
++
++    #[test]
++    fn multiple_compactions_use_the_latest_marker() {
++        let turns = vec![
++            turn("old", vec![user("old-user", "old")]),
++            turn("first-compact", vec![compaction("compact-1")]),
++            turn(
++                "between",
++                vec![
++                    user("between-user", "between"),
++                    agent("between-answer", "answer", None),
++                ],
++            ),
++            turn("latest-compact", vec![compaction("compact-2")]),
++            turn("suffix", vec![user("suffix-user", "after")]),
++        ];
++
++        let plan = CompactReplayPlan::from_turns(&turns, CompactReplayMode::CompactAware);
++
++        assert_eq!(
++            plan.folded_prefix,
++            Some(FoldedPrefix {
++                omitted_turn_count: 2,
++                omitted_item_count: 2,
++            })
++        );
++        assert_eq!(plan.turns.len(), 2);
++        assert_eq!(
++            canonical_ids(&plan.turns[0]),
++            vec!["between-user", "between-answer"]
++        );
++        assert_eq!(canonical_ids(&plan.turns[1]), vec!["suffix-user"]);
++        assert!(
++            plan.turns
++                .iter()
++                .flat_map(|turn| turn.items.iter())
++                .all(|item| !matches!(
++                    item,
++                    CompactReplayItem::Canonical(ThreadItem::ContextCompaction { .. })
++                ))
++        );
++    }
++
++    #[test]
++    fn compaction_inside_turn_keeps_items_after_marker_as_suffix() {
++        let turns = vec![turn(
++            "mixed",
++            vec![
++                user("pre-user", "before"),
++                agent("pre-answer", "answer", None),
++                compaction("compact"),
++                user("post-user", "after"),
++            ],
++        )];
++
++        let plan = CompactReplayPlan::from_turns(&turns, CompactReplayMode::CompactAware);
++
++        assert_eq!(plan.folded_prefix, None);
++        assert_eq!(plan.turns.len(), 2);
++        assert_eq!(
++            plan.turns[0].source,
++            CompactReplayTurnSource::FinalPreCompaction
++        );
++        assert_eq!(
++            canonical_ids(&plan.turns[0]),
++            vec!["pre-user", "pre-answer"]
++        );
++        assert_eq!(
++            plan.turns[1].source,
++            CompactReplayTurnSource::PostCompaction
++        );
++        assert_eq!(canonical_ids(&plan.turns[1]), vec!["post-user"]);
++    }
++
++    #[test]
++    fn compacted_thread_without_pre_turn_keeps_suffix_only() {
++        let turns = vec![
++            turn("compact", vec![compaction("compact")]),
++            turn("suffix", vec![user("suffix-user", "after")]),
++        ];
++
++        let plan = CompactReplayPlan::from_turns(&turns, CompactReplayMode::CompactAware);
++
++        assert_eq!(plan.folded_prefix, None);
++        assert_eq!(plan.turns.len(), 1);
++        assert_eq!(
++            plan.turns[0].source,
++            CompactReplayTurnSource::PostCompaction
++        );
++        assert_eq!(canonical_ids(&plan.turns[0]), vec!["suffix-user"]);
++    }
++}
+diff --git a/codex-rs/tui/src/lib.rs b/codex-rs/tui/src/lib.rs
+index 508977f..8937521 100644
+--- a/codex-rs/tui/src/lib.rs
++++ b/codex-rs/tui/src/lib.rs
+@@ -118,6 +118,7 @@ mod clipboard_copy;
+ mod clipboard_paste;
+ mod collaboration_modes;
+ mod color;
++mod compact_aware_replay;
+ mod config_update;
+ pub(crate) mod custom_terminal;
+ mod pets;

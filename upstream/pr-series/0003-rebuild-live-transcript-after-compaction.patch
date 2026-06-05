@@ -1,0 +1,584 @@
+diff --git a/codex-rs/tui/src/app.rs b/codex-rs/tui/src/app.rs
+index e31b180..024c90c 100644
+--- a/codex-rs/tui/src/app.rs
++++ b/codex-rs/tui/src/app.rs
+@@ -175,6 +175,7 @@ use ratatui::widgets::Paragraph;
+ use ratatui::widgets::Wrap;
+ use std::collections::BTreeMap;
+ use std::collections::HashMap;
++use std::collections::HashSet;
+ use std::collections::VecDeque;
+ use std::io::Write;
+ use std::path::Path;
+@@ -200,6 +201,7 @@ mod app_server_event_targets;
+ mod app_server_events;
+ pub(crate) mod app_server_requests;
+ mod background_requests;
++mod compact_rebuild;
+ mod config_persistence;
+ mod event_dispatch;
+ mod history_ui;
+@@ -495,6 +497,8 @@ pub(crate) struct App {
+     pub(crate) file_search: FileSearchManager,
+ 
+     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
++    compact_rebuild_suppressed_item_ids: HashMap<ThreadId, HashSet<String>>,
++    compact_rebuild_suppressed_turn_ids: HashMap<ThreadId, HashSet<String>>,
+ 
+     // Pager overlay state (Transcript or Static like Diff)
+     pub(crate) overlay: Option<Overlay>,
+@@ -1002,6 +1006,8 @@ See the Codex keymap documentation for supported actions and examples."
+             enhanced_keys_supported,
+             keymap: runtime_keymap,
+             transcript_cells: Vec::new(),
++            compact_rebuild_suppressed_item_ids: HashMap::new(),
++            compact_rebuild_suppressed_turn_ids: HashMap::new(),
+             overlay: None,
+             deferred_history_lines: Vec::new(),
+             has_emitted_history_lines: false,
+diff --git a/codex-rs/tui/src/app/compact_rebuild.rs b/codex-rs/tui/src/app/compact_rebuild.rs
+new file mode 100644
+index 0000000..28b8223
+--- /dev/null
++++ b/codex-rs/tui/src/app/compact_rebuild.rs
+@@ -0,0 +1,464 @@
++//! Compact-aware transcript rebuild helpers for live context compaction.
++
++use super::*;
++use std::collections::HashSet;
++
++impl App {
++    pub(super) fn should_suppress_compact_rebuild_event(
++        &mut self,
++        event: &ThreadBufferedEvent,
++    ) -> bool {
++        let ThreadBufferedEvent::Notification(notification) = event else {
++            return false;
++        };
++
++        if let Some((thread_id, item_id, is_terminal)) =
++            compact_rebuild_notification_item_key(notification)
++            && self.should_suppress_compact_rebuild_item(thread_id, &item_id, is_terminal)
++        {
++            return true;
++        }
++
++        if let Some((thread_id, turn_id, is_terminal)) =
++            compact_rebuild_notification_turn_key(notification)
++            && self.should_suppress_compact_rebuild_turn(thread_id, &turn_id, is_terminal)
++        {
++            return true;
++        }
++
++        false
++    }
++
++    fn should_suppress_compact_rebuild_item(
++        &mut self,
++        thread_id: ThreadId,
++        item_id: &str,
++        is_terminal: bool,
++    ) -> bool {
++        let Some(ids) = self.compact_rebuild_suppressed_item_ids.get_mut(&thread_id) else {
++            return false;
++        };
++        if !ids.contains(item_id) {
++            return false;
++        }
++        if is_terminal {
++            ids.remove(item_id);
++        }
++        let should_remove_map_entry = ids.is_empty();
++        if should_remove_map_entry {
++            self.compact_rebuild_suppressed_item_ids.remove(&thread_id);
++        }
++        true
++    }
++
++    fn should_suppress_compact_rebuild_turn(
++        &mut self,
++        thread_id: ThreadId,
++        turn_id: &str,
++        is_terminal: bool,
++    ) -> bool {
++        let Some(ids) = self.compact_rebuild_suppressed_turn_ids.get_mut(&thread_id) else {
++            return false;
++        };
++        if !ids.contains(turn_id) {
++            return false;
++        }
++        if is_terminal {
++            ids.remove(turn_id);
++        }
++        let should_remove_map_entry = ids.is_empty();
++        if should_remove_map_entry {
++            self.compact_rebuild_suppressed_turn_ids.remove(&thread_id);
++        }
++        true
++    }
++
++    pub(super) async fn rebuild_compact_aware_transcript_after_compaction(
++        &mut self,
++        tui: &mut tui::Tui,
++        app_server: &mut AppServerSession,
++        thread_id: ThreadId,
++        compaction_id: String,
++    ) -> Result<()> {
++        if !self.config.tui_compact_aware_rendering || self.active_thread_id != Some(thread_id) {
++            return Ok(());
++        }
++
++        let thread = match app_server
++            .thread_read(thread_id, /*include_turns*/ true)
++            .await
++        {
++            Ok(thread) => thread,
++            Err(err) => {
++                self.chat_widget.add_warning_message(format!(
++                    "Failed to rebuild compact-aware transcript after compaction {compaction_id}: {err}"
++                ));
++                return Ok(());
++            }
++        };
++
++        if self.active_thread_id != Some(thread_id) {
++            return Ok(());
++        }
++
++        let turns = thread.turns;
++        let (suppressed_item_ids, suppressed_turn_ids) = compact_rebuild_suppression_sets(&turns);
++
++        if let Some(channel) = self.thread_event_channels.get(&thread_id) {
++            let mut store = channel.store.lock().await;
++            store.set_turns(turns.clone());
++            store.rebase_buffer_after_session_refresh();
++        }
++
++        if suppressed_item_ids.is_empty() {
++            self.compact_rebuild_suppressed_item_ids.remove(&thread_id);
++        } else {
++            self.compact_rebuild_suppressed_item_ids
++                .insert(thread_id, suppressed_item_ids);
++        }
++        if suppressed_turn_ids.is_empty() {
++            self.compact_rebuild_suppressed_turn_ids.remove(&thread_id);
++        } else {
++            self.compact_rebuild_suppressed_turn_ids
++                .insert(thread_id, suppressed_turn_ids);
++        }
++
++        self.reset_transcript_state_after_clear();
++        self.chat_widget.reset_transcript_for_compact_rebuild();
++        self.clear_terminal_ui(tui, /*redraw_header*/ true)?;
++
++        let should_buffer_replay = self.terminal_resize_reflow_enabled() && !turns.is_empty();
++        if should_buffer_replay {
++            self.app_event_tx
++                .send(AppEvent::BeginThreadSwitchHistoryReplayBuffer);
++        }
++        self.chat_widget
++            .replay_thread_turns(turns, ReplayKind::ThreadSnapshot);
++        if should_buffer_replay {
++            self.app_event_tx
++                .send(AppEvent::EndInitialHistoryReplayBuffer);
++        }
++        tui.frame_requester().schedule_frame();
++        Ok(())
++    }
++}
++
++pub(super) fn live_context_compaction_event(
++    event: &ThreadBufferedEvent,
++) -> Option<(ThreadId, String)> {
++    let ThreadBufferedEvent::Notification(ServerNotification::ItemCompleted(notification)) = event
++    else {
++        return None;
++    };
++    let ThreadItem::ContextCompaction { id } = &notification.item else {
++        return None;
++    };
++    Some((
++        ThreadId::from_string(&notification.thread_id).ok()?,
++        id.clone(),
++    ))
++}
++
++fn compact_rebuild_notification_item_key(
++    notification: &ServerNotification,
++) -> Option<(ThreadId, String, bool)> {
++    match notification {
++        ServerNotification::ItemStarted(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            notification.item.id(),
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::ItemCompleted(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            notification.item.id(),
++            /*is_terminal*/ true,
++        ),
++        ServerNotification::AgentMessageDelta(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.item_id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::PlanDelta(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.item_id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::CommandExecutionOutputDelta(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.item_id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::TerminalInteraction(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.item_id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::FileChangeOutputDelta(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.item_id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::FileChangePatchUpdated(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.item_id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::McpToolCallProgress(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.item_id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::ReasoningSummaryTextDelta(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.item_id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::ReasoningSummaryPartAdded(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.item_id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::ReasoningTextDelta(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.item_id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::ItemGuardianApprovalReviewStarted(notification) => {
++            notification.target_item_id.as_deref().and_then(|item_id| {
++                compact_rebuild_key(&notification.thread_id, item_id, /*is_terminal*/ false)
++            })
++        }
++        ServerNotification::ItemGuardianApprovalReviewCompleted(notification) => {
++            notification.target_item_id.as_deref().and_then(|item_id| {
++                compact_rebuild_key(&notification.thread_id, item_id, /*is_terminal*/ false)
++            })
++        }
++        _ => None,
++    }
++}
++
++fn compact_rebuild_notification_turn_key(
++    notification: &ServerNotification,
++) -> Option<(ThreadId, String, bool)> {
++    match notification {
++        ServerNotification::TurnStarted(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.turn.id,
++            /*is_terminal*/ false,
++        ),
++        ServerNotification::TurnCompleted(notification) => compact_rebuild_key(
++            &notification.thread_id,
++            &notification.turn.id,
++            /*is_terminal*/ true,
++        ),
++        _ => None,
++    }
++}
++
++fn compact_rebuild_key(
++    thread_id: &str,
++    item_or_turn_id: &str,
++    is_terminal: bool,
++) -> Option<(ThreadId, String, bool)> {
++    Some((
++        ThreadId::from_string(thread_id).ok()?,
++        item_or_turn_id.to_string(),
++        is_terminal,
++    ))
++}
++
++fn compact_rebuild_suppression_sets(turns: &[Turn]) -> (HashSet<String>, HashSet<String>) {
++    let Some((compaction_turn_index, compaction_item_index)) =
++        latest_compaction_position_for_rebuild(turns)
++    else {
++        return (HashSet::new(), HashSet::new());
++    };
++
++    let mut item_ids = HashSet::new();
++    let mut turn_ids = HashSet::new();
++    for (turn_index, turn) in turns.iter().enumerate().skip(compaction_turn_index) {
++        let item_start = if turn_index == compaction_turn_index {
++            compaction_item_index + 1
++        } else {
++            0
++        };
++        let post_compaction_items = &turn.items[item_start..];
++        if post_compaction_items.is_empty() {
++            continue;
++        }
++        if turn_status_is_terminal(&turn.status) {
++            item_ids.extend(
++                post_compaction_items
++                    .iter()
++                    .map(|item| item.id().to_string()),
++            );
++            turn_ids.insert(turn.id.clone());
++        }
++    }
++
++    (item_ids, turn_ids)
++}
++
++fn latest_compaction_position_for_rebuild(turns: &[Turn]) -> Option<(usize, usize)> {
++    turns
++        .iter()
++        .enumerate()
++        .rev()
++        .find_map(|(turn_index, turn)| {
++            turn.items
++                .iter()
++                .enumerate()
++                .rev()
++                .find(|(_, item)| matches!(item, ThreadItem::ContextCompaction { .. }))
++                .map(|(item_index, _)| (turn_index, item_index))
++        })
++}
++
++fn turn_status_is_terminal(status: &TurnStatus) -> bool {
++    status == &TurnStatus::Completed
++        || status == &TurnStatus::Interrupted
++        || status == &TurnStatus::Failed
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn test_turn(id: &str, items: Vec<ThreadItem>, status: TurnStatus) -> Turn {
++        Turn {
++            id: id.to_string(),
++            items,
++            items_view: codex_app_server_protocol::TurnItemsView::Full,
++            status,
++            error: None,
++            started_at: None,
++            completed_at: None,
++            duration_ms: None,
++        }
++    }
++
++    fn test_user_item(id: &str, text: &str) -> ThreadItem {
++        ThreadItem::UserMessage {
++            id: id.to_string(),
++            client_id: None,
++            content: vec![codex_app_server_protocol::UserInput::Text {
++                text: text.to_string(),
++                text_elements: Vec::new(),
++            }],
++        }
++    }
++
++    #[test]
++    fn compact_rebuild_suppression_sets_cover_only_terminal_post_compaction_suffix() {
++        let turns = vec![
++            test_turn(
++                "old",
++                vec![test_user_item("old-user", "old")],
++                TurnStatus::Completed,
++            ),
++            test_turn(
++                "compact",
++                vec![ThreadItem::ContextCompaction {
++                    id: "compact-item".to_string(),
++                }],
++                TurnStatus::Completed,
++            ),
++            test_turn(
++                "suffix-complete",
++                vec![test_user_item("suffix-user", "after")],
++                TurnStatus::Completed,
++            ),
++            test_turn(
++                "suffix-in-progress",
++                vec![test_user_item("in-progress-user", "after running")],
++                TurnStatus::InProgress,
++            ),
++        ];
++
++        let (item_ids, turn_ids) = compact_rebuild_suppression_sets(&turns);
++
++        assert!(!item_ids.contains("old-user"));
++        assert!(!item_ids.contains("compact-item"));
++        assert!(item_ids.contains("suffix-user"));
++        assert!(!item_ids.contains("in-progress-user"));
++        assert!(turn_ids.contains("suffix-complete"));
++        assert!(!turn_ids.contains("suffix-in-progress"));
++    }
++
++    #[test]
++    fn compact_rebuild_suppression_keeps_future_events_for_in_progress_suffix() {
++        let thread_id =
++            ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("thread id");
++        let turns = vec![
++            test_turn(
++                "compact",
++                vec![ThreadItem::ContextCompaction {
++                    id: "compact-item".to_string(),
++                }],
++                TurnStatus::Completed,
++            ),
++            test_turn(
++                "suffix-in-progress",
++                vec![test_user_item("in-progress-user", "after running")],
++                TurnStatus::InProgress,
++            ),
++        ];
++        let (item_ids, turn_ids) = compact_rebuild_suppression_sets(&turns);
++        let item_event = ThreadBufferedEvent::Notification(ServerNotification::AgentMessageDelta(
++            codex_app_server_protocol::AgentMessageDeltaNotification {
++                thread_id: thread_id.to_string(),
++                turn_id: "suffix-in-progress".to_string(),
++                item_id: "in-progress-user".to_string(),
++                delta: "future".to_string(),
++            },
++        ));
++        let turn_event = ThreadBufferedEvent::Notification(ServerNotification::TurnCompleted(
++            codex_app_server_protocol::TurnCompletedNotification {
++                thread_id: thread_id.to_string(),
++                turn: test_turn(
++                    "suffix-in-progress",
++                    vec![test_user_item("in-progress-user", "after running")],
++                    TurnStatus::Completed,
++                ),
++            },
++        ));
++
++        assert!(!item_ids.contains("in-progress-user"));
++        assert!(!turn_ids.contains("suffix-in-progress"));
++        assert!(
++            compact_rebuild_notification_item_key(match &item_event {
++                ThreadBufferedEvent::Notification(notification) => notification,
++                _ => unreachable!("notification"),
++            })
++            .is_some()
++        );
++        assert!(
++            compact_rebuild_notification_turn_key(match &turn_event {
++                ThreadBufferedEvent::Notification(notification) => notification,
++                _ => unreachable!("notification"),
++            })
++            .is_some()
++        );
++    }
++
++    #[test]
++    fn live_context_compaction_event_extracts_thread_and_compaction_id() {
++        let thread_id =
++            ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("thread id");
++        let event = ThreadBufferedEvent::Notification(ServerNotification::ItemCompleted(
++            codex_app_server_protocol::ItemCompletedNotification {
++                item: ThreadItem::ContextCompaction {
++                    id: "compact-item".to_string(),
++                },
++                thread_id: thread_id.to_string(),
++                turn_id: "turn-1".to_string(),
++                completed_at_ms: 1,
++            },
++        ));
++
++        assert_eq!(
++            live_context_compaction_event(&event),
++            Some((thread_id, "compact-item".to_string()))
++        );
++    }
++}
+diff --git a/codex-rs/tui/src/app/test_support.rs b/codex-rs/tui/src/app/test_support.rs
+index 9bbe0c6..cd7a7e5 100644
+--- a/codex-rs/tui/src/app/test_support.rs
++++ b/codex-rs/tui/src/app/test_support.rs
+@@ -29,6 +29,8 @@ pub(super) async fn make_test_app() -> App {
+         runtime_permission_profile_override: None,
+         file_search,
+         transcript_cells: Vec::new(),
++        compact_rebuild_suppressed_item_ids: HashMap::new(),
++        compact_rebuild_suppressed_turn_ids: HashMap::new(),
+         overlay: None,
+         deferred_history_lines: Vec::new(),
+         has_emitted_history_lines: false,
+diff --git a/codex-rs/tui/src/app/tests.rs b/codex-rs/tui/src/app/tests.rs
+index 19da8ea..d2d5de3 100644
+--- a/codex-rs/tui/src/app/tests.rs
++++ b/codex-rs/tui/src/app/tests.rs
+@@ -3771,6 +3771,8 @@ async fn make_test_app() -> App {
+         runtime_permission_profile_override: None,
+         file_search,
+         transcript_cells: Vec::new(),
++        compact_rebuild_suppressed_item_ids: HashMap::new(),
++        compact_rebuild_suppressed_turn_ids: HashMap::new(),
+         overlay: None,
+         deferred_history_lines: Vec::new(),
+         has_emitted_history_lines: false,
+@@ -3834,6 +3836,8 @@ async fn make_test_app_with_channels() -> (
+             runtime_permission_profile_override: None,
+             file_search,
+             transcript_cells: Vec::new(),
++            compact_rebuild_suppressed_item_ids: HashMap::new(),
++            compact_rebuild_suppressed_turn_ids: HashMap::new(),
+             overlay: None,
+             deferred_history_lines: Vec::new(),
+             has_emitted_history_lines: false,
+diff --git a/codex-rs/tui/src/app/thread_routing.rs b/codex-rs/tui/src/app/thread_routing.rs
+index a403dc2..8600d6a 100644
+--- a/codex-rs/tui/src/app/thread_routing.rs
++++ b/codex-rs/tui/src/app/thread_routing.rs
+@@ -4,6 +4,7 @@
+ //! channels, submits thread-scoped operations through the app server, and replays buffered events
+ //! when the visible thread changes.
+ 
++use super::compact_rebuild::live_context_compaction_event;
+ use super::*;
+ use crate::session_resume::read_session_model;
+ 
+@@ -1440,6 +1441,8 @@ impl App {
+         app_server: &mut AppServerSession,
+         event: ThreadBufferedEvent,
+     ) -> Result<()> {
++        let live_context_compaction = live_context_compaction_event(&event);
++
+         // Capture this before any potential thread switch: we only want to clear
+         // the exit marker when the currently active thread acknowledges shutdown.
+         let pending_shutdown_exit_completed = matches!(
+@@ -1490,7 +1493,19 @@ impl App {
+             // thread, so unrelated shutdowns cannot consume this marker.
+             self.pending_shutdown_exit_thread_id = None;
+         }
++        if self.should_suppress_compact_rebuild_event(&event) {
++            return Ok(());
++        }
+         self.handle_thread_event_now(event);
++        if let Some((thread_id, compaction_id)) = live_context_compaction {
++            self.rebuild_compact_aware_transcript_after_compaction(
++                tui,
++                app_server,
++                thread_id,
++                compaction_id,
++            )
++            .await?;
++        }
+         if self.backtrack_render_pending {
+             tui.frame_requester().schedule_frame();
+         }

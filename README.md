@@ -4,7 +4,7 @@ Codex Afterglow fixes a specific Codex CLI pain point: after a long session is c
 
 Afterglow is a binary-first companion patch for Codex CLI. It installs a compact-aware TUI renderer that folds pre-compaction transcript history, preserves the last pre-compaction turn and all post-compaction content, and keeps a config fallback for full-history rendering.
 
-> Status: public alpha. The repository is public and the installer, tests, docs, and draft-first release workflow are ready for review. First binary release publishing and upstream issue/PR posting are still separate maintainer-gated steps. If no GitHub release assets exist yet, stop at dry-run and report that the binary release is not available.
+> Status: public alpha. The repository is public and the first binary release is published. Upstream OpenAI Codex issue/PR posting remains maintainer-gated and should not happen without final confirmation.
 
 Codex Afterglow is not an official OpenAI project. It is a companion workaround and proof-of-concept while the preferred long-term fix remains an upstream Codex TUI change.
 
@@ -62,7 +62,7 @@ The installer prints a rollback command. Save it before restarting Codex.
 - Does not replace npm/bun wrappers or local Glow Mirror/wrapper chains by default.
 - Refuses unknown install styles unless the user provides `--codex-binary <path>`.
 - Creates a backup before replacement and prints a rollback command.
-- The public repository does not imply that binaries are published or endorsed; release publishing and upstream issue/PR posting remain separate maintainer-gated steps.
+- Published binaries are unofficial and not endorsed by OpenAI; upstream issue/PR posting remains a separate maintainer-gated step.
 
 See [SAFETY.md](SAFETY.md), [SECURITY.md](SECURITY.md), [docs/installer.md](docs/installer.md), and [docs/rollback.md](docs/rollback.md).
 
