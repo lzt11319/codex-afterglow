@@ -1,7 +1,6 @@
 {
   "name": "codex-afterglow",
   "version": "0.1.0-alpha.0",
-  "private": true,
   "type": "module",
   "description": "Binary-first companion patch installer for Codex CLI compact-aware TUI rendering.",
   "scripts": {
